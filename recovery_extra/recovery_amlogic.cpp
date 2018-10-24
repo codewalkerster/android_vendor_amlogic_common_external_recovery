@@ -348,7 +348,6 @@ int ensure_path_mounted_extra(Volume *v) {
 
 void amlogic_init() {
     set_display_mode("/etc/mesondisplay.cfg");
-    sleep(1);
 }
 
 void amlogic_get_args(std::vector<std::string>& args) {

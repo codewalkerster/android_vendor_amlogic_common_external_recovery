@@ -19,6 +19,7 @@ int set_display_mode(const char *path)
     pUbootenv->updateValue("upgrade_step", "1");
     pSysWrite->setProperty(PROP_FS_MODE, "recovery");
     displayMode.init();
+    sleep(1);
 
     return 0;
 }
