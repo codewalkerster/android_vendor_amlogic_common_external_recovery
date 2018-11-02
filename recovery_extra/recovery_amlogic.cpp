@@ -346,8 +346,15 @@ int ensure_path_mounted_extra(Volume *v) {
     }
 }
 
-void amlogic_init() {
+void* HdcpThreadLoop(void *) {
     set_display_mode("/etc/mesondisplay.cfg");
+    return NULL;
+}
+
+void amlogic_init() {
+    pthread_t input_thread_;
+    pthread_create(&input_thread_, nullptr, HdcpThreadLoop, nullptr);
+    sleep(1);
 }
 
 void amlogic_get_args(std::vector<std::string>& args) {

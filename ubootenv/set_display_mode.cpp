@@ -19,7 +19,11 @@ int set_display_mode(const char *path)
     pUbootenv->updateValue("upgrade_step", "1");
     pSysWrite->setProperty(PROP_FS_MODE, "recovery");
     displayMode.init();
-    sleep(1);
+
+    //don't end this progress, wait for hdmi plug detect thread.
+    while (1) {
+        usleep(10000000);
+    }
 
     return 0;
 }
