@@ -16,7 +16,53 @@
 #include "cutils/properties.h"
 #include "security.h"
 
+#define CMD_SECURE_CHECK _IO('d', 0x01)
+#define CMD_DECRYPT_DTB  _IO('d', 0x02)
+
 T_KernelVersion kernel_ver = KernelV_3_10;
+int SetDtbEncryptFlag(const char *flag) {
+    int len = 0;
+    int fd = open(DECRYPT_DTB, O_RDWR);
+    if (fd <= 0) {
+        printf("open %s failed!\n", DECRYPT_DTB);
+        return -1;
+    }
+
+    len = write(fd, flag, 1);
+    if (len != 1) {
+        printf("write %s failed!\n", DECRYPT_DTB);
+        close(fd);
+        fd = -1;
+        return -1;
+    }
+
+    close(fd);
+
+    return 0;
+}
+
+int SetDtbEncryptFlagByIoctl(const char *flag) {
+    int ret = -1;
+    unsigned long operation = 0;
+    if (!strcmp(flag, "1") ) {
+        operation = 1;
+    } else {
+        operation = 0;
+    }
+
+    int fd = open(DEFEND_KEY, O_RDWR);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEFEND_KEY);
+        return -1;
+    }
+
+    ret = ioctl(fd, CMD_DECRYPT_DTB, &operation);
+    close(fd);
+
+    return ret;
+}
+
+
 /**
   *  --- judge platform whether match with zip image or not
   *
@@ -209,22 +255,15 @@ int DtbImgEncrypted(
         return 2;   // kernel doesn't support
     }
 
-    fd = open(DECRYPT_DTB, O_RDWR);
-    if (fd <= 0) {
-        printf("open %s failed!\n", DECRYPT_DTB);
-        return -1;
+    ret = SetDtbEncryptFlag(flag);
+    if (ret < 0) {
+        printf("set dtb encrypt flag by %s failed!, try ioctl\n", DECRYPT_DTB);
+        ret = SetDtbEncryptFlagByIoctl(flag);
+        if (ret < 0) {
+            printf("set dtb encrypt flag by ioctl failed!\n");
+            return -1;
+        }
     }
-
-    len = write(fd, flag, 1);
-    if (len != 1) {
-        printf("write %s failed!\n", DECRYPT_DTB);
-        close(fd);
-        fd = -1;
-        return -1;
-    }
-
-    close(fd);
-    fd = -1;
 
     fd = open(DEFEND_KEY, O_RDWR);
     if (fd <= 0) {
@@ -329,9 +368,9 @@ static int IsZipArchiveImageEncrypted(
     }
 
     //check image whether encrypted for kernel 3.14
-    const AmlSecureBootImgHeader encryptSecureBootImgHeader =
+    AmlSecureBootImgHeader encryptSecureBootImgHeader =
         (const AmlSecureBootImgHeader)pImageAddr;
-    const p_AmlEncryptBootImgInfo encryptBootImgHeader =
+    p_AmlEncryptBootImgInfo encryptBootImgHeader =
         &encryptSecureBootImgHeader->encrypteImgInfo;
 
     secureDbg("magic:%s, version:0x%04x\n",
@@ -339,12 +378,50 @@ static int IsZipArchiveImageEncrypted(
 
     ret = memcmp(encryptBootImgHeader->magic, SECUREBOOT_MAGIC,
         strlen(SECUREBOOT_MAGIC));
+
+    //for android P, 2048 offset
+    if (ret) {
+        encryptSecureBootImgHeader = (AmlSecureBootImgHeader)(pImageAddr+1024);
+        encryptBootImgHeader = &encryptSecureBootImgHeader->encrypteImgInfo;
+        ret = memcmp(encryptBootImgHeader->magic, SECUREBOOT_MAGIC, strlen(SECUREBOOT_MAGIC));
+    }
+
     if (!ret && encryptBootImgHeader->version != 0x0) {
         return 1;   // encrypted
     }
 
     return 0;       // unencrypted
  }
+
+int IsPlatformEncryptedByIoctl(void) {
+    int ret = -1;
+    unsigned int operation = 0;
+
+    if (access(DEFEND_KEY, F_OK)) {
+        printf("kernel doesn't support secure check\n");
+        return 2;   // kernel doesn't support
+    }
+
+    int fd = open(DEFEND_KEY, O_RDWR);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEFEND_KEY);
+        return -1;
+    }
+
+    ret = ioctl(fd, CMD_SECURE_CHECK, &operation);
+    kernel_ver = KernelV_3_14;
+    close(fd);
+
+    if (ret == 0) {
+        printf("check platform: unencrypted\n");
+    } else if (ret > 0) {
+        printf("check platform: encrypted\n");
+    } else {
+        printf("check platform: failed\n");
+    }
+
+    return ret;
+}
 
 /**
   *  --- check platform whether encrypt or not
@@ -356,7 +433,7 @@ static int IsZipArchiveImageEncrypted(
   */
 int IsPlatformEncrypted(void)
 {
-    /*int fd = -1, ret = -1;
+    int fd = -1, ret = -1;
     ssize_t count = 0;
     char rBuf[128] = {0};
     char platform[PROPERTY_VALUE_MAX+1] = {0};
@@ -405,8 +482,7 @@ int IsPlatformEncrypted(void)
         fd = -1;
     }
 
-    return ret;*/
-    return 0;
+    return ret;
 }
 
 /**
@@ -495,6 +571,11 @@ int RecoverySecureCheck(const ZipArchiveHandle zipArchive)
             RECOVERY_IMG };
 
     platformEncryptStatus = IsPlatformEncrypted();
+    if (platformEncryptStatus < 0) {
+        printf("get platform encrypted by /sys/class/defendkey/secure_check failed, try ioctl!\n");
+        platformEncryptStatus = IsPlatformEncryptedByIoctl();
+    }
+
     if (platformEncryptStatus ==  2) {
         return 2;// kernel doesn't support
     }

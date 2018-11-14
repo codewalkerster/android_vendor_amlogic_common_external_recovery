@@ -37,6 +37,7 @@ extern "C" {
 #define DEVICE_EMMC        1
 
 extern int IsPlatformEncrypted(void);
+extern int IsPlatformEncryptedByIoctl(void);
 
 extern int DtbImgEncrypted(
         const char *imageName,
@@ -702,6 +703,11 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
     int cache_size_dev = 0, cache_size_zip = 0;
 
     isEncrypted = IsPlatformEncrypted();
+    if (isEncrypted < 0) {
+        printf("get platform encrypted by /sys/class/defendkey/secure_check failed, try ioctl!\n");
+        isEncrypted = IsPlatformEncryptedByIoctl();
+    }
+
     if (isEncrypted == 2) {
         printf("kernel doesn't support!\n");
         return 0;

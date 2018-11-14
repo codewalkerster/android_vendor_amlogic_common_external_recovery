@@ -600,14 +600,14 @@ Value* OtaZipCheck(const char* name, State* state,
     int check = 0;
     ZipArchiveHandle za = static_cast<UpdaterInfo*>(state->cookie)->package_zip;
 
-    /*printf("\n-- Secure Check...\n");
+    printf("\n-- Secure Check...\n");
 
     check = RecoverySecureCheck(za);
     if (check <= 0) {
         return ErrorAbort(state, "Secure check failed. %s\n\n", !check ? "(Not match)" : "");
     } else if (check == 1) {
         printf("Secure check complete.\n\n");
-    }*/
+    }
 
 #ifndef RECOVERY_DISABLE_DTB_CHECK
     printf("\n-- Dtb Check...\n");
