@@ -607,6 +607,9 @@ Value* OtaZipCheck(const char* name, State* state,
 
     check = RecoveryDtbCheck(za);
     if (check != 0) {
+#ifdef SUPPORT_PARTNUM_CHANGE
+        check = 3;//allow upgrade by two step
+#endif
         if (check > 1) {
             if (check == 3) {
                 printf("data offset changed, need wipe_data\n\n");
@@ -679,7 +682,7 @@ Value* RebootRecovery(const char* name, State* state, const std::vector<std::uni
     printf("write_bootloader_message \n");
     if (!write_bootloader_message(boot, &err)) {
         printf("%s\n", err.c_str());
-        return ErrorAbort(state, "write_bootloader_message failed!\n");
+        printf("write_bootloader_message failed!\n");
     }
 
 
@@ -706,6 +709,16 @@ Value* RebootRecovery(const char* name, State* state, const std::vector<std::uni
 
     return ErrorAbort(state, "reboot to recovery failed!\n");
 }
+
+
+Value* Reboot(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
+
+    property_set(ANDROID_RB_PROPERTY, "reboot");
+    sleep(5);
+
+    return ErrorAbort(state, "reboot failed!\n");
+}
+
 
 Value* SetUpdateStage(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
     int ret = 0;
@@ -785,14 +798,121 @@ Value* BackupEnvPartition(const char* name, State* state,
     return StringValue(strdup("0"));
 }
 
+Value* BackupUpdatePackage(const char* name, State* state,
+                           const std::vector<std::unique_ptr<Expr>>&argv) {
+    int ret = 0;
+    if (argv.size() != 2) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() expects 2 args, got %zu", name, argv.size());
+    }
+
+    std::vector<std::string> args;
+    if (!ReadArgs(state, argv, &args)) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
+    }
+
+    const std::string& partition = args[0];
+    const std::string& offset = args[1];
+
+    std::string err;
+    char buf[256] = {0};
+    char tmp[256] = {0};
+    char path[256] = {0};
+    struct bootloader_message boot {};
+
+    read_bootloader_message(&boot,  &err);
+
+    printf("boot.command: %s\n", boot.command);
+    printf("boot.recovery: %s\n", boot.recovery);
+
+    if (strstr(boot.recovery, "--update_package=")) {
+        printf("check bootloader_message \n");
+        strcpy(tmp, strstr(boot.recovery, "--update_package="));
+        char *p = strtok(tmp, "\n");
+        strcpy(path, tmp+strlen("--update_package="));
+    }
+
+    if (!strstr(boot.recovery, "--update_package=")) {
+        std::string content;
+        printf("bootloader_message is null \n");
+        if (android::base::ReadFileToString(COMMAND_FILE, &content)) {
+            printf("recovery command: %s\n", content.c_str());
+            if (strstr(content.c_str(), "--update_package=")) {
+                strcpy(tmp, strstr(content.c_str(), "--update_package="));
+                char *p = strtok(tmp, "\n");
+                strcpy(path, tmp+strlen("--update_package="));
+            } else {
+                ret = -1;
+            }
+        }
+    }
+
+    printf("update package path: %s\n", path);
+
+    if (!strncmp(path, "/data", 5)) {
+        printf("%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+        sprintf(buf, "%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+
+        FILE *pf = fopen("/cache/recovery/zipinfo", "w+");
+        if (pf == NULL) {
+            return ErrorAbort(state, "fopen zipinfo failed!\n");
+        }
+
+        int len = fwrite(buf, 1, strlen(buf), pf);
+        printf("zipinfo write len:%d, %s\n", len, buf);
+        fflush(pf);
+        fclose(pf);
+
+        char buf_in[64] = {0};
+        char buf_out[64] = {0};
+        char buf_bs[16] = {0};
+        char buf_seek[64] = {0};
+        sprintf(buf_in, "%s%s", "if=", path);
+        sprintf(buf_out, "%s%s", "of=", partition.c_str());
+        sprintf(buf_bs, "%s", "bs=1M");
+        sprintf(buf_seek, "%s%s", "seek=", offset.c_str());
+
+        char *args2[7] = {"/sbin/busybox", "dd"};
+        args2[2] = &buf_in[0];
+        args2[3] = &buf_out[0];
+        args2[4] = &buf_bs[0];
+        args2[5] = &buf_seek[0];
+        args2[6] = nullptr;
+
+        pid_t child = fork();
+        if (child == 0) {
+            execv("/sbin/busybox", args2);
+            printf("execv failed\n");
+            _exit(EXIT_FAILURE);
+        }
+
+        int status;
+        waitpid(child, &status, 0);
+        if (WIFEXITED(status)) {
+            if (WEXITSTATUS(status) != 0) {
+                ErrorAbort(state,"child exited with status:%d\n", WEXITSTATUS(status));
+            }
+        } else if (WIFSIGNALED(status)) {
+            ErrorAbort(state,"child terminated by signal :%d\n", WTERMSIG(status));
+        }
+    }
+
+    if (ret == 0) {
+        return StringValue(strdup("0"));
+    } else {
+        return ErrorAbort(state, "backup update to /dev/block/mmcblk* failed!\n");
+    }
+}
+
 void Register_libinstall_amlogic() {
     RegisterFunction("write_dtb_image", WriteDtbImageFn);
     RegisterFunction("write_bootloader_image", WriteBootloaderImageFn);
     RegisterFunction("reboot_recovery", RebootRecovery);
+    RegisterFunction("reboot", Reboot);
     RegisterFunction("backup_data_cache", BackupDataCache);
     RegisterFunction("set_bootloader_env", SetBootloaderEnvFn);
     RegisterFunction("ota_zip_check", OtaZipCheck);
     RegisterFunction("get_update_stage", GetUpdateStage);
     RegisterFunction("set_update_stage", SetUpdateStage);
     RegisterFunction("backup_env_partition", BackupEnvPartition);
+    RegisterFunction("backup_update_package", BackupUpdatePackage);
 }

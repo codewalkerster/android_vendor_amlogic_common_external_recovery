@@ -17,6 +17,7 @@ Description:
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <ziparchive/zip_archive.h>
+#include <android-base/properties.h>
 #include "dtbcheck.h"
 
 
@@ -711,6 +712,13 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
     int recovery_size_dev = 0, recovery_size_zip = 0;
     int cache_size_dev = 0, cache_size_zip = 0;
 
+    //if not android 9, need upgrade for two step
+    std::string android_version = android::base::GetProperty("ro.build.version.sdk", "");
+    if (strcmp("28", android_version.c_str())) {
+        printf("now upgrade from android %s to 9\n", android_version.c_str());
+        return DTB_TWO_STEP;
+    }
+
     isEncrypted = IsPlatformEncrypted();
     if (isEncrypted < 0) {
         printf("get platform encrypted by /sys/class/defendkey/secure_check failed, try ioctl!\n");
@@ -719,18 +727,18 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
 
     if (isEncrypted == 2) {
         printf("kernel doesn't support!\n");
-        return 0;
+        return DTB_ALLOW;
     } else if (isEncrypted < 0) {
-        return -1;
+        return DTB_ERROR;
     }
 
     ret = GetZipDtbImage(za, DTB_IMG, &imageSize);
     if ((ret == 0) || (ret == 2)) {
         printf("no dtb.img in the update or no need check dtb, check dtb over!\n");
-        return 0;
+        return DTB_ALLOW;
     } else if (ret < 0) {
         printf("get dtb.img from update.zip failed!\n");
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
     }
 
@@ -739,14 +747,14 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
     ret = GetPartitionFromDtb("/partitions",  MAX_LEVEL, &partition_num_zip, 0);
     if (ret  != 0) {
         printf("get partition map from dtb.img failed!\n");
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
     }
 
     ret = GetDevDtbImage();
     if (ret != 0) {
         printf("read dtb from /dev/dtb failed!\n");
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
     }
 
@@ -754,7 +762,7 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
     ret = GetPartitionFromDtb("/partitions", MAX_LEVEL, &partition_num_dev, 1);
     if (ret  != 0) {
         printf("get partition map from /dev/dtb failed!\n");
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
     }
 
@@ -766,15 +774,15 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
         printf("partition num don't match zip:%d, dev:%d\n",partition_num_zip,  partition_num_dev);
         if (device_type == DEVICE_NAND) {
             printf("the partitions changed & device is nand! can not upgrade!\n ");
-            ret = -1;
+            ret = DTB_ERROR;
             goto END;
         }
         #ifdef SUPPORT_PARTNUM_CHANGE
-        ret = 2;
+        ret = DTB_CONFIG_ALLOW;
         partition_num = partition_num_zip > partition_num_dev ? partition_num_zip : partition_num_dev;
         #else
         printf("partition num don't match zip:%d, dev:%d, can not upgrade!\n",partition_num_zip,  partition_num_dev);
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
         #endif
     }
@@ -810,11 +818,11 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
 
         if ((strcmp(dtb_zip[i].partition_name, dtb_dev[i].partition_name) != 0)||
                 (dtb_zip[i].partition_size != dtb_dev[i].partition_size)) {
-            ret = 2;
+            ret = DTB_CONFIG_ALLOW;
             /*just emmc support partition changes*/
             if (device_type == DEVICE_NAND) {
                 printf("the partitions changed & device is nand! can not upgrade!\n ");
-                ret = -1;
+                ret = DTB_ERROR;
                 goto END;
             }
         }
@@ -852,18 +860,18 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
 
     if (data_offset_dev != data_offset_zip) {
         printf("data changed, need wipe_data\n ");
-        ret = 3;
+        ret = DTB_TWO_STEP;
     }
 
     if ((recovery_offset_dev != recovery_offset_zip) || (recovery_size_dev != recovery_size_zip)) {
         printf("recovery part changed! can not upgrade!\n ");
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
     }
 
     if ((cache_offset_dev != cache_offset_zip) || (cache_size_dev != cache_size_zip)) {
         printf("cache part changed! can not upgrade!\n ");
-        ret = -1;
+        ret = DTB_ERROR;
         goto END;
     }
 

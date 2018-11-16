@@ -17,7 +17,7 @@ Description:
 #include <sys/types.h>
 #include <sys/mount.h>
 #include <string.h>
-
+#include <android-base/properties.h>
 #include <ziparchive/zip_archive.h>
 #include <android-base/logging.h>
 
@@ -579,6 +579,13 @@ int RecoverySecureCheck(const ZipArchiveHandle zipArchive)
             BOOT_IMG,
             RECOVERY_IMG };
 
+    //if not android 9, need upgrade for two step
+    std::string android_version = android::base::GetProperty("ro.build.version.sdk", "");
+    if (strcmp("28", android_version.c_str())) {
+        printf("now upgrade from android %s to 9\n", android_version.c_str());
+        return SECURE_SKIP;
+    }
+
     platformEncryptStatus = IsPlatformEncrypted();
     if (platformEncryptStatus < 0) {
         printf("get platform encrypted by /sys/class/defendkey/secure_check failed, try ioctl!\n");
@@ -586,11 +593,11 @@ int RecoverySecureCheck(const ZipArchiveHandle zipArchive)
     }
 
     if (platformEncryptStatus ==  2) {
-        return 2;// kernel doesn't support
+        return SECURE_SKIP;// kernel doesn't support
     }
 
     if (platformEncryptStatus < 0) {
-        return -1;
+        return SECURE_ERROR;
     }
 
     if (platformEncryptStatus >0 ) {
@@ -604,7 +611,7 @@ int RecoverySecureCheck(const ZipArchiveHandle zipArchive)
 
             } else {
                 printf("dtb secure check error!\n");
-                ret = -1;
+                ret = SECURE_ERROR;
                 goto ERR1;
             }
         } else if (ret == 0) {
@@ -632,7 +639,7 @@ int RecoverySecureCheck(const ZipArchiveHandle zipArchive)
             pImageName[i], (imageEncryptStatus < 0) ? "failed" :
             !imageEncryptStatus ? "unencrypted" : "encrypted");
             if (imageEncryptStatus < 0) {
-                ret = -1;
+                ret = SECURE_ERROR;
                 goto ERR1;
             }
 
@@ -656,7 +663,7 @@ int RecoverySecureCheck(const ZipArchiveHandle zipArchive)
         }
     }
 
-    return 1;
+    return SECURE_MATCH;
 
 
 ERR1:

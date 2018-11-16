@@ -35,6 +35,11 @@ Description:
 #define SECURE_CHECK_BAK \
         "/sys/class/defendkey/secure_check"
 
+#define SECURE_ERROR    (-1)
+#define SECURE_FAIL        (0)
+#define SECURE_MATCH    (1)
+#define SECURE_SKIP        (2)
+
 
 #ifndef SECURITY_DEBUG
 #define secureDbg(fmt ...)
