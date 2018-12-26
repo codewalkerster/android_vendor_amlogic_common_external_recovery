@@ -399,6 +399,14 @@ static int IsZipArchiveImageEncrypted(
         return 1;   // encrypted
     }
 
+    //for v3 secureboot image encrypted
+    if (ret) {
+        const unsigned char V3SecureBootInfoBuf[] = { 0x40, 0x41, 0x4D, 0x4C};
+        if (!memcmp(V3SecureBootInfoBuf, pImageAddr, ARRAY_SIZE(V3SecureBootInfoBuf))) {
+            return 1;   // encrypted
+        }
+    }
+
     return 0;       // unencrypted
  }
 
