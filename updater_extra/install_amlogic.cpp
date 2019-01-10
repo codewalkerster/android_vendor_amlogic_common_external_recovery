@@ -64,6 +64,8 @@ Description:
 #define COMMAND_FILE "/cache/recovery/command"
 #define CACHE_ROOT "/cache"
 
+#define UNCRYPT_FILE "/cache/recovery/uncrypt_file"
+
 
 enum emmcPartition {
     USER = 0,
@@ -848,7 +850,61 @@ Value* BackupUpdatePackage(const char* name, State* state,
 
     printf("update package path: %s\n", path);
 
-    if (!strncmp(path, "/data", 5)) {
+    //if update_package=@/cache/recovery/block.map
+    //need to find the real data of package and backup to /dev/block/mmcblk0
+    //and save the size and name of package to /cache/recovery/zipinfo
+    if (path[0] == '@') {
+        std::string content;
+        if (android::base::ReadFileToString(UNCRYPT_FILE, &content)) {
+            printf("recovery uncrypt: %s\n", content.c_str());
+            strcpy(path, content.c_str());
+        }
+
+        printf("%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+        sprintf(buf, "%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+
+        FILE *pf = fopen("/cache/recovery/zipinfo", "w+");
+        if (pf == NULL) {
+            return ErrorAbort(state, "fopen zipinfo failed!\n");
+        }
+
+        int len = fwrite(buf, 1, strlen(buf), pf);
+        printf("zipinfo write len:%d, %s\n", len, buf);
+        fflush(pf);
+        fclose(pf);
+
+        int fd = open(partition.c_str(), O_RDWR);
+        if (fd < 0) {
+            printf("open %s failed!\n", partition.c_str());
+            return ErrorAbort(state, "open mmcblk failed!\n");
+        }
+
+        int offset_w = strtoul(offset.c_str(), NULL, 10);
+
+        int result = lseek(fd, offset_w*1024*1024, SEEK_SET);
+        if (result == -1) {
+            printf("lseek %s failed!\n", partition.c_str());
+            return ErrorAbort(state, "lseek mmcblk failed!\n");
+        }
+
+        int len_w = write(fd, static_cast<UpdaterInfo*>(state->cookie)->package_zip_addr,static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+        if (len_w != static_cast<UpdaterInfo*>(state->cookie)->package_zip_len) {
+            printf("write %s failed!\n", partition.c_str());
+            return ErrorAbort(state, "write mmcblk failed!\n");
+        }
+
+        FILE *fp = NULL;
+        fp = fdopen(fd, "r+");
+        if (fp == NULL) {
+            printf("fdopen failed!\n");
+            close(fd);
+            return ErrorAbort(state, "close mmcblk failed!\n");
+        }
+
+        fflush(fp);
+        fsync(fd);
+        fclose(fp);
+    } else if (!strncmp(path, "/data", 5)) {
         printf("%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
         sprintf(buf, "%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
 
