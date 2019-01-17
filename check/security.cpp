@@ -71,6 +71,32 @@ int SetDtbEncryptFlagByIoctl(const char *flag) {
     return ret;
 }
 
+int GetSecureBootImageSize(const unsigned char *buffer, const int size) {
+
+    int len = size;
+    int encrypt_size = size;
+    unsigned char *pstart = (unsigned char *)buffer;
+
+    //"avbtool"
+    const unsigned char avbtool[] = { 0x61, 0x76, 0x62, 0x74, 0x6F, 0x6F, 0x6C };
+
+    while (len > 8) {
+        if (!memcmp(pstart, avbtool, 7)) {
+            printf("find avb0 flag,already enable avb function !\n");
+            //encrypt image offset 148 bytes
+            pstart += 148;
+            //get encrypt image size
+            encrypt_size = (pstart[0] << 24) + (pstart[1] << 16) + (pstart[2] << 8) + pstart[3];
+            printf("encrypt_size = %d\n", encrypt_size);
+            break;
+        }
+        pstart += 8;
+        len -= 8;
+    }
+
+    return encrypt_size;
+}
+
 
 /**
   *  --- judge platform whether match with zip image or not
@@ -95,6 +121,7 @@ static int IsPlatformMachWithZipArchiveImage(
 {
     int fd = -1, ret = -1;
     ssize_t result = -1;
+    int encrypt_size = 0;
 
     if (strcmp(imageName, BOOT_IMG) &&
         strcmp(imageName, RECOVERY_IMG) &&
@@ -136,7 +163,11 @@ static int IsPlatformMachWithZipArchiveImage(
                         DEFEND_KEY, strerror(errno));
                     return -1;
                 }
-                result = write(fd, imageBuffer, imageSize);// check rsa
+
+                //if enable avb, need get the real encrypt data size
+                encrypt_size = GetSecureBootImageSize(imageBuffer, imageSize);
+
+                result = write(fd, imageBuffer, encrypt_size);// check rsa
                 printf("write %s datas to %s. [imgsize:%d, result:%d, %s]\n",
                     imageName, DEFEND_KEY, imageSize, result,
                     (result == 1) ? "match" :
