@@ -568,18 +568,6 @@ Value* SetBootloaderEnvFn(const char* name, State* state, const std::vector<std:
         return ErrorAbort(state, kArgsParsingFailure, "%s() Failed, one of the argument(s) is null ", name);
     }
 
-    //rm backup dtb.img and recovery.img
-    if ((!strcmp(env_val.c_str(), "1")) || (!strcmp(env_val.c_str(), "2"))) {
-        struct stat st;
-        if (stat("/cache/recovery/dtb.img", &st) == 0) {
-            unlink("/cache/recovery/dtb.img");
-        }
-
-         if (stat("/cache/recovery/recovery.img", &st) == 0) {
-            unlink("/cache/recovery/recovery.img");
-        }
-    }
-
     ret = set_bootloader_env(env_name.c_str(), env_val.c_str());
     printf("setenv %s %s %s.(%d)\n", env_name.c_str(), env_val.c_str(), (ret < 0) ? "failed" : "successful", ret);
     if (!ret) {
@@ -959,6 +947,29 @@ Value* BackupUpdatePackage(const char* name, State* state,
     }
 }
 
+Value* DeleteFileByName(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
+    int ret = 0;
+    if (argv.size() != 1) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() expects 1 args, got %zu", name, argv.size());
+    }
+
+    std::vector<std::string> args;
+    if (!ReadArgs(state, argv, &args)) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
+    }
+
+    const std::string& file = args[0];
+
+    struct stat st;
+    if (stat(file.c_str(), &st) == 0) {
+        unlink(file.c_str());
+    } else {
+        printf("%s not exist, can not delete it!\n", file.c_str());
+    }
+
+    return StringValue("done");
+}
+
 void Register_libinstall_amlogic() {
     RegisterFunction("write_dtb_image", WriteDtbImageFn);
     RegisterFunction("write_bootloader_image", WriteBootloaderImageFn);
@@ -971,4 +982,5 @@ void Register_libinstall_amlogic() {
     RegisterFunction("set_update_stage", SetUpdateStage);
     RegisterFunction("backup_env_partition", BackupEnvPartition);
     RegisterFunction("backup_update_package", BackupUpdatePackage);
+    RegisterFunction("delete_file", DeleteFileByName);
 }
