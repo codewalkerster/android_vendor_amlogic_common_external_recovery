@@ -436,6 +436,11 @@ static int IsZipArchiveImageEncrypted(
         if (!memcmp(V3SecureBootInfoBuf, pImageAddr, ARRAY_SIZE(V3SecureBootInfoBuf))) {
             return 1;   // encrypted
         }
+
+        //find offset 2048 byte
+        if (!memcmp(V3SecureBootInfoBuf, pImageAddr+2048, ARRAY_SIZE(V3SecureBootInfoBuf))) {
+            return 1;   // encrypted
+        }
     }
 
     return 0;       // unencrypted
