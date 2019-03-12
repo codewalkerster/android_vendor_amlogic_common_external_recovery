@@ -12,6 +12,7 @@ Description:
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <zlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -26,10 +27,11 @@ extern "C" {
 }
 
 
-
+#define MAX_DTB_SIZE   (512*1024)
 #define MAX_LEVEL	32		/* how deeply nested we will go */
 #define CONFIG_CMD_FDT_MAX_DUMP 64
 
+#define GZIP_DT_HEADER_MAGIC   0x08088b1f	/*gzip header of dtb file*/
 #define DT_HEADER_MAGIC		0xedfe0dd0	/*header of dtb file*/
 #define AML_DT_HEADER_MAGIC	0x5f4c4d41	/*"AML_", multi dtbs supported*/
 
@@ -343,11 +345,51 @@ GetPartitionFromDtb(const char *pathp,  int depth, int *partition_num, int flag)
 	return 0;
 }
 
+static unsigned char *s_pTmpBuffer = NULL;
+int DecompressGzipDtb(const unsigned char *src, const int srcLen, unsigned char *dst, int dstLen){
+    z_stream strm;
+    strm.zalloc=NULL;
+    strm.zfree=NULL;
+    strm.opaque=NULL;
+    strm.avail_in = srcLen;
+    strm.avail_out = dstLen;
+    strm.next_in = (Bytef *)src;
+    strm.next_out = (Bytef *)dst;
+    int err=-1, ret=-1;
+
+    err = inflateInit2(&strm, MAX_WBITS+16);
+    if (err == Z_OK) {
+        err = inflate(&strm, Z_FINISH);
+        if (err == Z_STREAM_END) {
+            ret = strm.total_out;
+        } else {
+            ret = -1;
+        }
+        inflateEnd(&strm);
+    }
+
+    return ret;
+}
+
 unsigned char *
 GetMultiDtbEntry(unsigned char *fdt_addr, int *plen){
     unsigned int dt_magic = STRTOU32(fdt_addr);
     signed int dt_total = 0;
     unsigned int dt_tool_version = 0;
+
+    if (dt_magic == GZIP_DT_HEADER_MAGIC) {
+        int ret  = 0;
+        s_pTmpBuffer = (unsigned char *)malloc(MAX_DTB_SIZE);
+        memset(s_pTmpBuffer, 0x00, MAX_DTB_SIZE);
+        ret = DecompressGzipDtb(fdt_addr, *plen, s_pTmpBuffer, MAX_DTB_SIZE);
+        if (ret < 0 ) {
+            *plen = 0;
+            return fdt_addr;
+        }
+        fdt_addr = s_pTmpBuffer;
+        *plen = ret;
+        dt_magic = STRTOU32(fdt_addr);
+    }
 
     //printf("      Amlogic multi-dtb tool\n");
     if (dt_magic == DT_HEADER_MAGIC) {/*normal dtb*/
@@ -571,6 +613,10 @@ GetZipDtbImage(const ZipArchiveHandle za, const char *imageName, int *imageSize)
 
     memcpy(s_pDtbBuffer, paddr, len);
     free(buffer);
+    if (s_pTmpBuffer != NULL) {
+        free(s_pTmpBuffer);
+        s_pTmpBuffer = NULL;
+    }
 
     return 1;
 }
@@ -636,6 +682,10 @@ GetDevDtbImage(){
 
     memcpy(s_pDtbBuffer, paddr, len);
     free(buffer);
+    if (s_pTmpBuffer != NULL) {
+        free(s_pTmpBuffer);
+        s_pTmpBuffer = NULL;
+    }
 
     return 0;
 }

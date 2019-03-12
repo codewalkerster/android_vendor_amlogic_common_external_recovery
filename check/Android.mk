@@ -11,11 +11,12 @@ LOCAL_C_INCLUDES += bootable/recovery
 LOCAL_C_INCLUDES += \
     system/core/base/include \
     system/core/libziparchive/include \
+    external/zlib \
     external/dtc/libfdt
 
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/../
 
-LOCAL_STATIC_LIBRARIES := libcutils libselinux
+LOCAL_STATIC_LIBRARIES := libcutils libselinux libz
 
 LOCAL_CLANG := true
 
