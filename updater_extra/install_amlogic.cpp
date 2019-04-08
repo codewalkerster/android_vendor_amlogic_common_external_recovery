@@ -66,6 +66,16 @@ Description:
 
 #define UNCRYPT_FILE "/cache/recovery/uncrypt_file"
 
+#define PATH_KEY_CDEV		  "/dev/unifykeys"
+#define PARAM_FIRMWARE         "/param/firmware.le"
+#define UNIFYKEY_HDCP_FW             "hdcp22_rx_fw"
+#define UNIFYKEY_HDCP_PRIVATE    "hdcp22_rx_private"
+#define KEY_UNIFY_NAME_LEN	         (48)
+#define KEY_HDCP_OFFSET	  (10*1024)
+#define KEY_HDCP_SIZE	         (2080)
+/*do not use those anymore*/
+#define KEYUNIFY_ATTACH         _IO('f', 0x60)
+#define KEYUNIFY_GET_INFO     _IO('f', 0x62)
 
 enum emmcPartition {
     USER = 0,
@@ -85,6 +95,16 @@ static const char *sEmmcPartionName[] = {
 };
 
 int wipe_flag = 0;
+
+/* for ioctrl transfer paramters. */
+struct key_item_info_t {
+    unsigned int id;
+    char name[KEY_UNIFY_NAME_LEN];
+    unsigned int size;
+    unsigned int permit;
+    unsigned int flag;        /*bit 0: 1 exsit, 0-none;*/
+    unsigned int reserve;
+};
 
 int RecoverySecureCheck(const ZipArchiveHandle zipArchive);
 int RecoveryDtbCheck(const ZipArchiveHandle zipArchive);
@@ -970,6 +990,166 @@ Value* DeleteFileByName(const char* name, State* state, const std::vector<std::u
     return StringValue("done");
 }
 
+int init_unifykey(const char *path, const char *keyname)
+{
+    int fp = -1;
+    int ret = -1;
+    struct key_item_info_t key_item_info;
+
+    fp  = open(path, O_RDWR);
+    if (fp < 0) {
+        printf("no %s found\n", path);
+        return -1;
+    }
+    strcpy(key_item_info.name, keyname);
+
+    ret =ioctl(fp, KEYUNIFY_ATTACH, &key_item_info);
+    close(fp);
+    return ret;
+}
+
+int get_info_unifykey(const char *path, struct key_item_info_t *info)
+{
+    int fp = -1;
+    int ret = -1;
+
+    fp  = open(path, O_RDWR);
+    if (fp < 0) {
+        printf("no %s found\n", path);
+        return -1;
+    }
+
+    ret =ioctl(fp, KEYUNIFY_GET_INFO, &info);
+    close(fp);
+    return ret;
+}
+
+
+
+int hdcp_write_key(const char * node, char *buff, char *name)
+{
+    int fd;
+    int ret = 0;
+    unsigned long ppos;
+    size_t writesize;
+    struct key_item_info_t key_item_info;
+
+    if ((NULL == node) || (NULL == buff) || (NULL == name))
+    {
+        printf("invalid param!\n");
+        return -1;
+    }
+
+    fd  = open(node, O_RDWR);
+    if (fd < 0) {
+        printf("no %s found\n", node);
+        return -1;
+    }
+
+    /* seek the key index need operate. */
+    strcpy(key_item_info.name, name);
+    ret = ioctl(fd, KEYUNIFY_GET_INFO, &key_item_info);
+    if (ret < 0) {
+        close(fd);
+        return -1;
+    }
+
+    ppos = key_item_info.id;
+    lseek(fd, ppos, SEEK_SET);
+
+    writesize = write(fd, buff, KEY_HDCP_SIZE);
+    if (writesize != KEY_HDCP_SIZE) {
+        printf("write %s failed!\n", key_item_info.name);
+        close(fd);
+        return -1;
+    }
+    printf("write %s(%ld) down!\n", key_item_info.name, writesize);
+    close(fd);
+    return ret;
+}
+
+
+Value* WriteHdcp22RxFwFn(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
+
+    int ret = -1;
+
+    //check if /param/firmware.le exist
+    if (access(PARAM_FIRMWARE, F_OK)) {
+        printf("can't find %s, skip!\n", PARAM_FIRMWARE);
+        return StringValue("OK");
+    }
+
+    //init unifykey hdcp22_rx_private
+    ret = init_unifykey(PATH_KEY_CDEV, UNIFYKEY_HDCP_PRIVATE);
+    if (ret < 0) {
+        printf("can't init unifykey:%s\n", UNIFYKEY_HDCP_PRIVATE);
+        return StringValue("OK");
+    }
+
+    //init unifykey hdcp22_rx_fw
+    ret = init_unifykey(PATH_KEY_CDEV, UNIFYKEY_HDCP_FW);
+    if (ret < 0) {
+        printf("can't init unifykey:%s\n", UNIFYKEY_HDCP_FW);
+        return StringValue("OK");
+    }
+
+    //get info of hdcp22_rx_fw
+    struct key_item_info_t info;
+    strcpy(info.name, UNIFYKEY_HDCP_FW);
+    ret = get_info_unifykey(PATH_KEY_CDEV, &info);
+    if (ret < 0) {
+        printf("get info unifykey:%s failed\n", UNIFYKEY_HDCP_FW);
+        return StringValue("OK");
+    }
+
+    //check size of hdcp22_rx_fw
+    printf("%s size is %u\n", UNIFYKEY_HDCP_FW, info.size);
+    if (info.size == 2080) {
+        printf("%s size is right, no need write!\n", UNIFYKEY_HDCP_FW);
+        return StringValue("OK");
+    }
+
+    //open /param/firmware.le
+    int fd = open(PARAM_FIRMWARE, O_RDONLY);
+    if (fd < 0) {
+        return ErrorAbort(state, "open file %s failed!\n", PARAM_FIRMWARE);
+    }
+
+    //seek 10k
+    ret = lseek(fd, KEY_HDCP_OFFSET, SEEK_SET);
+    if (ret < 0) {
+        return ErrorAbort(state, "lseek file %s(%d) failed!\n", PARAM_FIRMWARE, KEY_HDCP_OFFSET);
+    }
+
+    //malloc buffer
+    char *tmpbuf = (char *)malloc(KEY_HDCP_SIZE);
+    if (tmpbuf == NULL) {
+        close(fd);
+        return ErrorAbort(state, "malloc tmpbuf (%d) failed!\n", KEY_HDCP_SIZE);
+    }
+
+    //memeset and read
+    memset(tmpbuf, 0, KEY_HDCP_SIZE);
+    int len = read(fd, tmpbuf, KEY_HDCP_SIZE);
+    if (len != KEY_HDCP_SIZE) {
+        close(fd);
+        free(tmpbuf);
+        return ErrorAbort(state, "read %s (%d) failed!\n", PARAM_FIRMWARE,KEY_HDCP_SIZE);
+    }
+    close(fd);
+
+    //write hdcp_rx_fw key
+    ret = hdcp_write_key(PATH_KEY_CDEV, tmpbuf, UNIFYKEY_HDCP_FW);
+    if (ret < 0) {
+        free(tmpbuf);
+        return ErrorAbort(state, "write %s  failed!\n", UNIFYKEY_HDCP_FW);
+    }
+    free(tmpbuf);
+    tmpbuf = NULL;
+
+    return StringValue("OK");
+}
+
 void Register_libinstall_amlogic() {
     RegisterFunction("write_dtb_image", WriteDtbImageFn);
     RegisterFunction("write_bootloader_image", WriteBootloaderImageFn);
@@ -980,6 +1160,7 @@ void Register_libinstall_amlogic() {
     RegisterFunction("ota_zip_check", OtaZipCheck);
     RegisterFunction("get_update_stage", GetUpdateStage);
     RegisterFunction("set_update_stage", SetUpdateStage);
+    RegisterFunction("write_hdcp_22rxfw", WriteHdcp22RxFwFn);
     RegisterFunction("backup_env_partition", BackupEnvPartition);
     RegisterFunction("backup_update_package", BackupUpdatePackage);
     RegisterFunction("delete_file", DeleteFileByName);
