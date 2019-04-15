@@ -31,7 +31,8 @@ extern "C" {
 #define MAX_LEVEL	32		/* how deeply nested we will go */
 #define CONFIG_CMD_FDT_MAX_DUMP 64
 
-#define GZIP_DT_HEADER_MAGIC   0x08088b1f	/*gzip header of dtb file*/
+#define GZIP_DT_HEADER_MAGIC_HOST    0x00088b1f	       /*gzip header of dtb file*/
+#define GZIP_DT_HEADER_MAGIC_LINUX   0x08088b1f	/*gzip header of dtb file*/
 #define DT_HEADER_MAGIC		0xedfe0dd0	/*header of dtb file*/
 #define AML_DT_HEADER_MAGIC	0x5f4c4d41	/*"AML_", multi dtbs supported*/
 
@@ -377,7 +378,7 @@ GetMultiDtbEntry(unsigned char *fdt_addr, int *plen){
     signed int dt_total = 0;
     unsigned int dt_tool_version = 0;
 
-    if (dt_magic == GZIP_DT_HEADER_MAGIC) {
+    if ((dt_magic == GZIP_DT_HEADER_MAGIC_LINUX) || (dt_magic == GZIP_DT_HEADER_MAGIC_HOST)) {
         int ret  = 0;
         s_pTmpBuffer = (unsigned char *)malloc(MAX_DTB_SIZE);
         memset(s_pTmpBuffer, 0x00, MAX_DTB_SIZE);
