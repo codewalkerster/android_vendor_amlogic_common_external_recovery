@@ -16,7 +16,9 @@ Description:
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/statfs.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
@@ -65,6 +67,9 @@ Description:
 #define CACHE_ROOT "/cache"
 
 #define UNCRYPT_FILE "/cache/recovery/uncrypt_file"
+#define UPDATE_TMP_FILE "/cache/update_tmp.zip"
+#define DEV_DATA                "/dev/block/data"
+#define DEV_EMMC                "/dev/block/mmcblk0"
 
 #define PATH_KEY_CDEV		  "/dev/unifykeys"
 #define PARAM_FIRMWARE         "/param/firmware.le"
@@ -153,7 +158,6 @@ static int getBootloaderOffset(int* bootloaderOffset)
 {
     const char* PathBlOff = "/sys/class/aml_store/bl_off_bytes" ;
     int             iret  = 0;
-    int             blOff = 0;
     char  buf[16]         = { 0 };
     int           readCnt = 0;
 
@@ -216,6 +220,43 @@ static int write_data(int fd, const char *data, ssize_t len)
     return len;
 }
 
+
+int do_cache_sync(void) {
+
+    int fd = 0;
+    int ret = 0;
+
+    //umount /cache
+    ret = umount("/cache");
+    if (ret != 0) {
+        fprintf(stderr, "umount cache failed\n", strerror(errno));
+    }
+
+    fd = open("/dev/block/cache", O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "open %s failed (%s)\n","/dev/block/cache", strerror(errno));
+        return -1;
+    }
+
+    FILE *fp = fdopen(fd, "r+");
+    if (fp == NULL) {
+        printf("fdopen failed!\n");
+        close(fd);
+        return -1;
+    }
+
+    fflush(fp);
+    fsync(fd);
+    fclose(fp);
+
+    ret = mount("/dev/block/cache", "/cache", "ext4",\
+        MS_NOATIME | MS_NODEV | MS_NODIRATIME,"discard");
+    if (ret < 0 ) {
+        fprintf(stderr, "mount cache failed (%s)\n","/dev/block/cache", strerror(errno));
+    }
+
+    return 0;
+}
 
 //return value
 // -1  :   failed
@@ -283,35 +324,11 @@ static int backup_partition_data(const char *name,const char *dir, long offset) 
     close(dst_fd);
     close(sor_fd);
     free(buffer);
-    buffer == NULL;
+    buffer = NULL;
 
-    //umount /cache and do fsync for data save
-    ret = umount("/cache");
-    if (ret != 0) {
-        fprintf(stderr, "umount cache failed (%s)\n",dstpath, strerror(errno));
-    }
-
-    fd = open("/dev/block/cache", O_RDWR);
-    if (fd < 0) {
-        fprintf(stderr, "open %s failed (%s)\n","/dev/block/cache", strerror(errno));
-        return -1;
-    }
-
-    fp = fdopen(fd, "r+");
-    if (fp == NULL) {
-        printf("fdopen failed!\n");
-        close(fd);
-        return -1;
-    }
-
-    fflush(fp);
-    fsync(fd);
-    fclose(fp);
-
-    ret = mount("/dev/block/cache", "/cache", "ext4",\
-        MS_NOATIME | MS_NODEV | MS_NODIRATIME,"discard");
-    if (ret < 0 ) {
-        fprintf(stderr, "mount cache failed (%s)\n","/dev/block/cache", strerror(errno));
+    ret = do_cache_sync();
+    if (ret < 0) {
+        printf("do sync for cache partition failed!\n");
     }
 
     return 0;
@@ -328,7 +345,7 @@ err_out:
 
     if (buffer) {
         free(buffer);
-        buffer == NULL;
+        buffer = NULL;
     }
 
     return -1;
@@ -448,9 +465,9 @@ int block_write_data( const std::string& args, off_t offset) {
         success = true;
         int size =  args.size();
         lseek(fd, offset, SEEK_SET);//need seek one sector to skip MBR area since gxl
-        fprintf(stderr, "size = %d offset = %d\n", size, offset);
+        fprintf(stderr, "size = %d offset = %ld\n", size, offset);
         if (write(fd, args.c_str(), size) != size) {
-            fprintf(stderr, " write error at offset :%d (%s)\n",offset, strerror(errno));
+            fprintf(stderr, " write error at offset :%ld (%s)\n",offset, strerror(errno));
             success = false;
         }
 
@@ -474,7 +491,6 @@ done:
 
 
 Value* WriteBootloaderImageFn(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
-    char* result = NULL;
     int iRet = 0;
 
     if (argv.size() != 1) {
@@ -607,7 +623,7 @@ Value* OtaZipCheck(const char* name, State* state,
 
     check = RecoverySecureCheck(za);
     if (check <= 0) {
-        return ErrorAbort(state, "Secure check failed. %s\n\n", !check ? "(Not match)" : "");
+        return ErrorAbort(state, kArgsParsingFailure, "Secure check failed. %s\n\n", !check ? "(Not match)" : "");
     } else if (check == 1) {
         printf("Secure check complete.\n\n");
     }
@@ -617,9 +633,6 @@ Value* OtaZipCheck(const char* name, State* state,
 
     check = RecoveryDtbCheck(za);
     if (check != 0) {
-#ifdef SUPPORT_PARTNUM_CHANGE
-        check = 3;//allow upgrade by two step
-#endif
         if (check > 1) {
             if (check == 3) {
                 printf("data offset changed, need wipe_data\n\n");
@@ -637,7 +650,7 @@ Value* OtaZipCheck(const char* name, State* state,
             printf("dtb check not match, but can upgrade by two step.\n\n");
             return StringValue(strdup("1"));
         }
-        return ErrorAbort(state, "Dtb check failed. %s\n\n", !check ? "(Not match)" : "");
+        return ErrorAbort(state, kArgsParsingFailure, "Dtb check failed. %s\n\n", !check ? "(Not match)" : "");
     } else {
         printf("dtb check complete.\n\n");
     }
@@ -717,7 +730,7 @@ Value* RebootRecovery(const char* name, State* state, const std::vector<std::uni
     property_set(ANDROID_RB_PROPERTY, "reboot,recovery");
     sleep(5);
 
-    return ErrorAbort(state, "reboot to recovery failed!\n");
+    return ErrorAbort(state, kRebootFailure, "reboot to recovery failed!\n");
 }
 
 
@@ -726,12 +739,11 @@ Value* Reboot(const char* name, State* state, const std::vector<std::unique_ptr<
     property_set(ANDROID_RB_PROPERTY, "reboot");
     sleep(5);
 
-    return ErrorAbort(state, "reboot failed!\n");
+    return ErrorAbort(state, kRebootFailure, "reboot failed!\n");
 }
 
 
 Value* SetUpdateStage(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
-    int ret = 0;
     if (argv.size() != 1) {
         return ErrorAbort(state, kArgsParsingFailure, "%s() expects 1 args, got %zu", name, argv.size());
     }
@@ -745,7 +757,7 @@ Value* SetUpdateStage(const char* name, State* state, const std::vector<std::uni
 
     FILE *pf = fopen("/cache/recovery/stage", "w+");
     if (pf == NULL) {
-        return ErrorAbort(state, "fopen stage failed!\n");
+        return ErrorAbort(state, kFileOpenFailure, "fopen stage failed!\n");
     }
 
     int len = fwrite(stage_step.c_str(), 1, strlen(stage_step.c_str()), pf);
@@ -779,7 +791,7 @@ Value* BackupEnvPartition(const char* name, State* state,
 
     offset = GetEnvPartitionOffset(za);
     if (offset <= 0) {
-        return ErrorAbort(state, "get env partition offset failed!\n");
+        return ErrorAbort(state, kArgsParsingFailure, "get env partition offset failed!\n");
     }
 
     offset = offset/(1024*1024);
@@ -799,18 +811,613 @@ Value* BackupEnvPartition(const char* name, State* state,
     waitpid(child, &status, 0);
     if (WIFEXITED(status)) {
         if (WEXITSTATUS(status) != 0) {
-            ErrorAbort(state,"child exited with status:%d\n", WEXITSTATUS(status));
+            ErrorAbort(state,kArgsParsingFailure, "child exited with status:%d\n", WEXITSTATUS(status));
         }
     } else if (WIFSIGNALED(status)) {
-        ErrorAbort(state,"child terminated by signal :%d\n", WTERMSIG(status));
+        ErrorAbort(state,kArgsParsingFailure, "child terminated by signal :%d\n", WTERMSIG(status));
     }
 
     return StringValue(strdup("0"));
 }
 
+#define RESIZE2FS_INFO  "/cache/recovery/datainfo"
+#define  DATA_DEVICE      "/dev/block/data"
+#define  COPY_SIZE           (10*1024*1024)
+#define  RESERVED_SIZE           (50*1024*1024)
+
+int UserData_Backup(int fd, unsigned long long soffset, unsigned long long doffset, unsigned long long size, unsigned char *buf) {
+    signed long long ret = 0;
+    doffset= doffset * (-1);
+    printf("soffset:%lld, doffset:%lld, size:%lld\n", soffset, doffset, size);
+    ret = lseek(fd, soffset, SEEK_SET);
+    if (ret < 0) {
+        printf("lseek soffset failed! ret : %lld\n", ret);
+        return -1;
+    }
+
+    ret = read(fd, buf, size);
+    if (ret != size) {
+        printf("read size %lldfailed!\n", size);
+        return -1;
+    }
+
+    ret = lseek(fd, doffset, SEEK_END);
+    if (ret < 0) {
+        printf("lseek doffset failed! ret = %lld\n", ret);
+        return -1;
+    }
+
+    ret = write(fd, buf, size);
+     if (ret != size) {
+        printf("write size %lld failed!\n", size);
+        return -1;
+    }
+
+     return 0;
+}
+
+int UserData_Move(int fd, int fd1, unsigned long long emmc_offset, unsigned long long offset, unsigned long long size, unsigned char *buf) {
+    signed long long ret = 0;
+    printf("e_offset:%llu offset:%llu, size:%lld\n", emmc_offset+offset, offset, size);
+    ret = lseek(fd, emmc_offset+offset, SEEK_SET);
+    if (ret < 0) {
+        printf("lseek offset failed! ret : %lld\n", ret);
+        return -1;
+    }
+
+    ret = read(fd, buf, size);
+    if (ret != size) {
+        printf("read size %lldfailed!\n", size);
+        return -1;
+    }
+
+    ret = lseek(fd1, offset, SEEK_SET);
+    if (ret < 0) {
+        printf("lseek doffset failed! ret = %lld\n", ret);
+        return -1;
+    }
+
+    ret = write(fd1, buf, size);
+     if (ret != size) {
+        printf("write size %lld failed!\n", size);
+        return -1;
+    }
+
+     return 0;
+}
+
+int UserData_Recovery(int fd, unsigned long long soffset, unsigned long long doffset, unsigned long long size, unsigned char *buf) {
+    long long ret = 0;
+    soffset = soffset * (-1);
+    printf("soffset:%lld, doffset:%lld, size:%lld\n", soffset, doffset, size);
+    ret = lseek(fd, soffset, SEEK_END);
+    if (ret < 0) {
+        printf("lseek soffset failed!ret = %lld\n", ret);
+        return -1;
+    }
+
+    ret = read(fd, buf, size);
+    if (ret != size) {
+        printf("read size %lld failed!\n", size);
+        return -1;
+    }
+
+    ret = lseek(fd, doffset, SEEK_SET);
+    if (ret < 0) {
+        printf("lseek doffset failed! ret = %lld\n", ret);
+        return -1;
+    }
+
+    ret = write(fd, buf, size);
+     if (ret != size) {
+        printf("write size %lld failed!\n", size);
+        return -1;
+    }
+
+     return 0;
+}
+
+int Recovery_Resize2fs_Data(void) {
+    int ret = 0;
+    char buf[256] = {0};
+    int matches = 0;
+    unsigned long long data_resize = 0;
+    unsigned long long data_old_offset = 0;
+
+    //open datainfo
+    FILE *pf = fopen(RESIZE2FS_INFO, "r");
+    if (pf == NULL) {
+        printf("fopen %s failed!\n", RESIZE2FS_INFO);
+        return 1;
+    }
+
+    //fread data from datainfo
+    int len = fread(buf, 1, 256, pf);
+
+    //close datainfo
+    fclose(pf);
+    if (len <= 0) {
+        printf("fread %s failed!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //parse datainfo
+    matches = sscanf(buf, "%llu %llu", &data_resize, &data_old_offset);
+    if (matches != 2) {
+        printf("fread %s error data!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //blocks to real size
+    data_resize = data_resize*4*1024;
+    printf("backup resize2fs %s (%llu) \n",DATA_DEVICE, data_resize);
+
+    //open /dev/block/data for get fd
+    int fd = open(DEV_EMMC, O_RDONLY);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEV_EMMC);
+        return -1;
+    }
+
+    //open /dev/block/data for get fd
+    int fd1 = open(DATA_DEVICE, O_RDWR);
+    if (fd1 < 0) {
+        printf("open %s failed!\n", DATA_DEVICE);
+        close(fd);
+        return -1;
+    }
+
+    //malloc 10^M buffer
+    unsigned char *tmp = (unsigned char *)malloc(COPY_SIZE);
+    if (tmp == NULL) {
+        printf("malloc 10M failed!\n");
+        close(fd);
+        close(fd1);
+        return -1;
+    }
+
+    unsigned long long tmp_size = 0;
+    unsigned long long left = data_resize;
+    printf("start to backup the resize2fs data(%llu) emmc_offset(%llu) partition to head!\n", data_resize, data_old_offset);
+#if 1
+    //while read and write
+    while (left > 0) {
+        if (left > COPY_SIZE) {
+            tmp_size = COPY_SIZE;
+        } else {
+            tmp_size = left;
+        }
+
+        printf("-----read_size(%llu), left(%llu)------\n", tmp_size, left);
+        ret = UserData_Move(fd, fd1, data_old_offset, left-tmp_size, tmp_size, tmp);
+        if (ret < 0) {
+            printf("userdata move failed!\n");
+            break;
+        }
+        left -= tmp_size;
+    }
+#else
+    //while read and write
+    while (left > 0) {
+        if (left > COPY_SIZE) {
+            tmp_size = COPY_SIZE;
+        } else {
+            tmp_size = left;
+        }
+
+        printf("-----read_size(%llu), left(%llu)------\n", tmp_size, left);
+        ret = UserData_Recovery(fd, left, data_resize-left, tmp_size, tmp);
+        if (ret < 0) {
+            printf("userdata move failed!\n");
+            break;
+        }
+        left -= tmp_size;
+    }
+#endif
+    close(fd);
+
+    //fdopen for ffush and fsync
+    FILE *fps = fdopen(fd1, "r+");
+    if (fps == NULL) {
+        printf("fdopen failed!\n");
+        close(fd1);
+    } else {
+        fflush(fps);
+        fsync(fd1);
+        fclose(fps);
+    }
+
+    //free buffer
+    free(tmp);
+    tmp = NULL;
+
+    return ret;
+}
+
+static unsigned long long get_block_device_size(int fd)
+{
+    unsigned long long size = 0;
+    int ret;
+
+    ret = ioctl(fd, BLKGETSIZE64, &size);
+
+    if (ret)
+            return 0;
+
+    return size;
+}
+
+static int check_partition_data_resize(unsigned long long data_size,
+    unsigned long long check_size) {
+
+
+    char *args2[4] = {"/sbin/resize2fs", "-P", "/dev/block/data"};
+    args2[3] = nullptr;
+    pid_t child = fork();
+    if (child == 0) {
+        execv("/sbin/resize2fs", args2);
+        printf("execv failed\n");
+        _exit(EXIT_FAILURE);
+    }
+
+    int status;
+    waitpid(child, &status, 0);
+    if (WIFEXITED(status)) {
+        if (WEXITSTATUS(status) != 0) {
+            printf("child exited with status:%d\n", WEXITSTATUS(status));
+            return -1;
+        }
+    } else if (WIFSIGNALED(status)) {
+        printf("child terminated by signal :%d\n", WTERMSIG(status));
+        return -1;
+    }
+
+    char buf[256] = {0};
+    int matches = 0;
+    unsigned long long data_resize = 0;
+
+    //open datainfo
+    FILE *pf = fopen(RESIZE2FS_INFO, "r");
+    if (pf == NULL) {
+        printf("fopen %s failed!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //fread data from datainfo
+    int len = fread(buf, 1, 256, pf);
+
+    //close datainfo
+    fclose(pf);
+    if (len <= 0) {
+        printf("fread %s failed!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //parse datainfo
+    matches = sscanf(buf, "%llu", &data_resize);
+    if (matches != 1) {
+        printf("fread %s error data!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //blocks to real size
+    data_resize = data_resize*4*1024;
+    printf("backup resize2fs %s (%llu -> %llu) \n",DATA_DEVICE, data_size, data_resize);
+
+    //calc the check size by bytes
+    check_size = check_size*1024*1024;
+    if (data_size - data_resize < check_size) {
+        printf("data partition has no enough memory(%llu < %llu) for resize2fs!\n", data_size - data_resize, check_size);
+        unlink(RESIZE2FS_INFO);
+        return -1;
+    }
+
+    printf("data partition has enough memory for resize2fs!\n");
+    return 0;
+}
+
+int Backup_Data_check( unsigned long check_size) {
+    int fd = 0;
+    unsigned long long data_size = 0;
+
+    fd = open(DEV_DATA, O_RDONLY);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEV_DATA);
+        return -1;
+    }
+
+    data_size = get_block_device_size(fd);
+    if (data_size == 0) {
+        printf("get %s size failed!\n", DEV_DATA);
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+#if 0
+    char buf[256] = {0};
+    int matches = 0;
+    unsigned long long data_resize = 0;
+    unsigned long long emmc_size = 0;
+    unsigned long long data_offset = 0;
+    unsigned long long data_diff = 0;
+
+    fd = open(DEV_EMMC, O_RDONLY);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEV_EMMC);
+        return -1;
+    }
+    emmc_size = get_block_device_size(fd);
+    if (emmc_size == 0) {
+        printf("get %s size failed!\n", DEV_EMMC);
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    data_offset = emmc_size - data_size;
+    printf("data partition offset: %llu\n", data_offset);
+#endif
+
+    return check_partition_data_resize(data_size, check_size);
+}
+
+int Backup_Resize2fs_Data( void ) {
+#if 1
+    int fd = 0;
+    char buf[256] = {0};
+    unsigned long long emmc_size = 0;
+    unsigned long long data_offset = 0;
+    unsigned long long data_size = 0;
+
+    fd = open(DEV_DATA, O_RDONLY);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEV_DATA);
+        return -1;
+    }
+
+    data_size = get_block_device_size(fd);
+    if (data_size == 0) {
+        printf("get %s size failed!\n", DEV_DATA);
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    fd = open(DEV_EMMC, O_RDONLY);
+    if (fd < 0) {
+        printf("open %s failed!\n", DEV_EMMC);
+        return -1;
+    }
+    emmc_size = get_block_device_size(fd);
+    if (emmc_size == 0) {
+        printf("get %s size failed!\n", DEV_EMMC);
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    data_offset = emmc_size - data_size;
+    printf("data partition offset: %llu\n", data_offset);
+
+     //open datainfo
+    FILE *pf = fopen(RESIZE2FS_INFO, "a+");
+    if (pf == NULL) {
+        printf("fopen %s failed!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //fread data from datainfo
+    sprintf(buf, " %llu", data_offset);
+    int len = fwrite(buf, 1, 256, pf );
+    fflush(pf);
+    fclose(pf);
+    return 0;
+
+#else
+    int ret = 0;
+    char buf[256] = {0};
+    int matches = 0;
+    unsigned long long data_resize = 0;
+
+    //open datainfo
+    FILE *pf = fopen(RESIZE2FS_INFO, "r");
+    if (pf == NULL) {
+        printf("fopen %s failed!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //fread data from datainfo
+    int len = fread(buf, 1, 256, pf);
+
+    //close datainfo
+    fclose(pf);
+    if (len <= 0) {
+        printf("fread %s failed!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //parse datainfo
+    matches = sscanf(buf, "%llu", &data_resize);
+    if (matches != 1) {
+        printf("fread %s error data!\n", RESIZE2FS_INFO);
+        return -1;
+    }
+
+    //blocks to real size
+    data_resize = data_resize*4*1024;
+    printf("backup resize2fs %s (%llu) \n",DATA_DEVICE, data_resize);
+
+    //open /dev/block/data for get fd
+    int fd = open(DATA_DEVICE, O_RDWR);
+    if (fd < 0) {
+        printf("open %s failed!\n", DATA_DEVICE);
+        return -1;
+    }
+
+    //malloc 10^M buffer
+    unsigned char *tmp = (unsigned char *)malloc(COPY_SIZE);
+    if (tmp == NULL) {
+        printf("malloc 10M failed!\n");
+        close(fd);
+        return -1;
+    }
+
+    unsigned long long tmp_size = 0;
+    unsigned long long left = data_resize;
+    printf("start to backup the resize2fs data(%llu) partition to end!\n", data_resize);
+
+    //while read and write
+    while (left > 0) {
+        if (left > COPY_SIZE) {
+            tmp_size = COPY_SIZE;
+        } else {
+            tmp_size = left;
+        }
+
+        left -= tmp_size;
+        printf("-----read_size(%llu), left(%llu)------\n", tmp_size, left);
+        ret = UserData_Backup(fd, left, data_resize-left, tmp_size, tmp);
+        if (ret < 0) {
+            printf("userdata move failed!\n");
+            break;
+        }
+    }
+
+    //fdopen for ffush and fsync
+    FILE *fps = fdopen(fd, "r+");
+    if (fps == NULL) {
+        printf("fdopen failed!\n");
+        close(fd);
+    } else {
+        fflush(fps);
+        fsync(fd);
+        fclose(fps);
+    }
+
+    //free buffer
+    free(tmp);
+    tmp = NULL;
+
+    return ret;
+ #endif
+}
+
+
+Value* BackupDataPartitionCheck(const char* name, State* state,
+                           const std::vector<std::unique_ptr<Expr>>&argv) {
+   int ret = 0;
+   if (argv.size() != 1) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() expects 1 args, got %zu", name, argv.size());
+    }
+
+    std::vector<std::string> args;
+    if (!ReadArgs(state, argv, &args)) {
+        return ErrorAbort(state, kArgsParsingFailure, "%s() Failed to parse the argument(s)", name);
+    }
+
+    const std::string& expect_size = args[0];
+    unsigned long resize_diff_size = strtoul(expect_size.c_str(), NULL, 10);
+
+    ret = Backup_Data_check(resize_diff_size);
+
+    if (ret < 0) {
+        return ErrorAbort(state, kArgsParsingFailure, "data can not do resize2fs!\n");
+    }
+    return StringValue(strdup("0"));
+}
+
+Value* BackupDataPartition(const char* name, State* state,
+                           const std::vector<std::unique_ptr<Expr>>&argv) {
+
+    char *args2[4] = {"/sbin/resize2fs", "-fMp", "/dev/block/data"};
+    args2[3] = nullptr;
+    pid_t child = fork();
+    if (child == 0) {
+        execv("/sbin/resize2fs", args2);
+        printf("execv failed\n");
+        _exit(EXIT_FAILURE);
+    }
+
+    int status;
+    waitpid(child, &status, 0);
+    if (WIFEXITED(status)) {
+        if (WEXITSTATUS(status) != 0) {
+            ErrorAbort(state,kArgsParsingFailure, "child exited with status:%d\n", WEXITSTATUS(status));
+        }
+    } else if (WIFSIGNALED(status)) {
+        ErrorAbort(state,kArgsParsingFailure, "child terminated by signal :%d\n", WTERMSIG(status));
+    }
+
+    //no need to format data partition
+    wipe_flag = 0;
+    int ret = Backup_Resize2fs_Data();
+
+    if (ret < 0) {
+        ErrorAbort(state,kArgsParsingFailure, "backup resize2fs data failed!\n");
+    }
+    return StringValue(strdup("0"));
+}
+
+Value* RecoveryDataPartition(const char* name, State* state,
+                           const std::vector<std::unique_ptr<Expr>>&argv) {
+
+    int ret = Recovery_Resize2fs_Data();
+    if (ret == 1) {
+        printf("no file datainfo for recovery data partition!\n");
+        return StringValue(strdup("0"));
+    } else if (ret < 0) {
+        ErrorAbort(state,kArgsParsingFailure, "recovery data partition failed!\n");
+    }
+
+    char *args2[4] = {"/sbin/resize2fs", "-f", "/dev/block/data"};
+    args2[3] = nullptr;
+    pid_t child = fork();
+    if (child == 0) {
+        execv("/sbin/resize2fs", args2);
+        printf("execv failed\n");
+        _exit(EXIT_FAILURE);
+    }
+
+    int status;
+    waitpid(child, &status, 0);
+    if (WIFEXITED(status)) {
+        if (WEXITSTATUS(status) != 0) {
+            ErrorAbort(state,kArgsParsingFailure, "child exited with status:%d\n", WEXITSTATUS(status));
+        }
+    } else if (WIFSIGNALED(status)) {
+        ErrorAbort(state,kArgsParsingFailure, "child terminated by signal :%d\n", WTERMSIG(status));
+    }
+
+    unlink(RESIZE2FS_INFO);
+
+    return StringValue(strdup("0"));
+}
+
+static int get_partition_free_size(const char *path, unsigned long long package_size) {
+
+    struct statfs buf;
+    int ret = statfs(path, &buf);
+    if (ret < 0) {
+        printf("statfs failed!\n");
+        return 0;
+    }
+
+    printf("buf.f_bsize = %d \n", buf.f_bsize);
+    printf("buf.f_bavail = %llu \n", buf.f_bavail);
+    printf("cache free size:%llu , update_size:%zu \n", buf.f_bsize*buf.f_bavail, package_size);
+    if (buf.f_bsize*buf.f_bavail < package_size + RESERVED_SIZE) {
+        printf("cache partition is not enough to backup, backup to /dev/block/mmcblk0!\n");
+        return 0;
+    }
+    printf("cache partition is enough to backup update zip!\n");
+    return 1;
+}
+
 Value* BackupUpdatePackage(const char* name, State* state,
                            const std::vector<std::unique_ptr<Expr>>&argv) {
     int ret = 0;
+    int backup_cache_flag = 0;
     if (argv.size() != 2) {
         return ErrorAbort(state, kArgsParsingFailure, "%s() expects 2 args, got %zu", name, argv.size());
     }
@@ -829,8 +1436,9 @@ Value* BackupUpdatePackage(const char* name, State* state,
     char path[256] = {0};
     struct bootloader_message boot {};
 
+    //read from bcb data of misc
+    //printf("start to backup update zip to cache partition\n");
     read_bootloader_message(&boot,  &err);
-
     printf("boot.command: %s\n", boot.command);
     printf("boot.recovery: %s\n", boot.recovery);
 
@@ -841,6 +1449,7 @@ Value* BackupUpdatePackage(const char* name, State* state,
         strcpy(path, tmp+strlen("--update_package="));
     }
 
+    //if path is NULL, than read from /cache/recovery/command
     if (!strstr(boot.recovery, "--update_package=")) {
         std::string content;
         printf("bootloader_message is null \n");
@@ -856,119 +1465,102 @@ Value* BackupUpdatePackage(const char* name, State* state,
         }
     }
 
+    //check cache partition whether has enough space store update package.
+    backup_cache_flag = get_partition_free_size("/cache", static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
     printf("update package path: %s\n", path);
 
     //if update_package=@/cache/recovery/block.map
     //need to find the real data of package and backup to /dev/block/mmcblk0
     //and save the size and name of package to /cache/recovery/zipinfo
     if (path[0] == '@') {
-        std::string content;
-        if (android::base::ReadFileToString(UNCRYPT_FILE, &content)) {
-            printf("recovery uncrypt: %s\n", content.c_str());
-            strcpy(path, content.c_str());
-        }
 
-        printf("%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
-        sprintf(buf, "%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
-
-        FILE *pf = fopen("/cache/recovery/zipinfo", "w+");
-        if (pf == NULL) {
-            return ErrorAbort(state, "fopen zipinfo failed!\n");
-        }
-
-        int len = fwrite(buf, 1, strlen(buf), pf);
-        printf("zipinfo write len:%d, %s\n", len, buf);
-        fflush(pf);
-        fclose(pf);
-
-        int fd = open(partition.c_str(), O_RDWR);
-        if (fd < 0) {
-            printf("open %s failed!\n", partition.c_str());
-            return ErrorAbort(state, "open mmcblk failed!\n");
-        }
-
-        int offset_w = strtoul(offset.c_str(), NULL, 10);
-
-        int result = lseek(fd, offset_w*1024*1024, SEEK_SET);
-        if (result == -1) {
-            printf("lseek %s failed!\n", partition.c_str());
-            return ErrorAbort(state, "lseek mmcblk failed!\n");
-        }
-
-        int len_w = write(fd, static_cast<UpdaterInfo*>(state->cookie)->package_zip_addr,static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
-        if (len_w != static_cast<UpdaterInfo*>(state->cookie)->package_zip_len) {
-            printf("write %s failed!\n", partition.c_str());
-            return ErrorAbort(state, "write mmcblk failed!\n");
-        }
-
-        FILE *fp = NULL;
-        fp = fdopen(fd, "r+");
-        if (fp == NULL) {
-            printf("fdopen failed!\n");
-            close(fd);
-            return ErrorAbort(state, "close mmcblk failed!\n");
-        }
-
-        fflush(fp);
-        fsync(fd);
-        fclose(fp);
-    } else if (!strncmp(path, "/data", 5)) {
-        printf("%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
-        sprintf(buf, "%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
-
-        FILE *pf = fopen("/cache/recovery/zipinfo", "w+");
-        if (pf == NULL) {
-            return ErrorAbort(state, "fopen zipinfo failed!\n");
-        }
-
-        int len = fwrite(buf, 1, strlen(buf), pf);
-        printf("zipinfo write len:%d, %s\n", len, buf);
-        fflush(pf);
-        fclose(pf);
-
-        char buf_in[64] = {0};
-        char buf_out[64] = {0};
-        char buf_bs[16] = {0};
-        char buf_seek[64] = {0};
-        sprintf(buf_in, "%s%s", "if=", path);
-        sprintf(buf_out, "%s%s", "of=", partition.c_str());
-        sprintf(buf_bs, "%s", "bs=1M");
-        sprintf(buf_seek, "%s%s", "seek=", offset.c_str());
-
-        char *args2[7] = {"/sbin/busybox", "dd"};
-        args2[2] = &buf_in[0];
-        args2[3] = &buf_out[0];
-        args2[4] = &buf_bs[0];
-        args2[5] = &buf_seek[0];
-        args2[6] = nullptr;
-
-        pid_t child = fork();
-        if (child == 0) {
-            execv("/sbin/busybox", args2);
-            printf("execv failed\n");
-            _exit(EXIT_FAILURE);
-        }
-
-        int status;
-        waitpid(child, &status, 0);
-        if (WIFEXITED(status)) {
-            if (WEXITSTATUS(status) != 0) {
-                ErrorAbort(state,"child exited with status:%d\n", WEXITSTATUS(status));
+        //backup update zip to /dev/block/mmcblk0
+        if (backup_cache_flag == 0) {
+            std::string content;
+            if (android::base::ReadFileToString(UNCRYPT_FILE, &content)) {
+                printf("recovery uncrypt: %s\n", content.c_str());
+                strcpy(path, content.c_str());
             }
-        } else if (WIFSIGNALED(status)) {
-            ErrorAbort(state,"child terminated by signal :%d\n", WTERMSIG(status));
+
+            printf("%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+            sprintf(buf, "%s %s %d", path, offset.c_str(), static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+
+            FILE *pf = fopen("/cache/recovery/zipinfo", "w+");
+            if (pf == NULL) {
+                return ErrorAbort(state, kArgsParsingFailure, "fopen zipinfo failed!\n");
+            }
+
+            int len = fwrite(buf, 1, strlen(buf), pf);
+            printf("zipinfo write len:%d, %s\n", len, buf);
+            fflush(pf);
+            fclose(pf);
+
+            int fd = open(partition.c_str(), O_RDWR);
+            if (fd < 0) {
+                printf("open %s failed!\n", partition.c_str());
+                return ErrorAbort(state, kFileOpenFailure, "open mmcblk failed!\n");
+            }
+
+            int offset_w = strtoul(offset.c_str(), NULL, 10);
+
+            int result = lseek(fd, offset_w*1024*1024, SEEK_SET);
+            if (result == -1) {
+                printf("lseek %s failed!\n", partition.c_str());
+                return ErrorAbort(state, kLseekFailure, "lseek mmcblk failed!\n");
+            }
+
+            size_t len_w = write(fd, static_cast<UpdaterInfo*>(state->cookie)->package_zip_addr,static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+            if (len_w != static_cast<UpdaterInfo*>(state->cookie)->package_zip_len) {
+                printf("write %s failed!\n", partition.c_str());
+                return ErrorAbort(state, kFwriteFailure, "write mmcblk failed!\n");
+            }
+
+            FILE *fp = NULL;
+            fp = fdopen(fd, "r+");
+            if (fp == NULL) {
+                printf("fdopen failed!\n");
+                close(fd);
+                return ErrorAbort(state, kFileOpenFailure, "close mmcblk failed!\n");
+            }
+
+            fflush(fp);
+            fsync(fd);
+            fclose(fp);
+        } else {
+            //backup update zip to /cache
+            int fd = open(UPDATE_TMP_FILE, O_RDWR| O_CREAT, 00777);
+            if (fd < 0) {
+                printf("open %s failed!\n", UPDATE_TMP_FILE);
+                return ErrorAbort(state, kFileOpenFailure, "open %s failed!\n", UPDATE_TMP_FILE);
+            }
+
+            size_t len_w = write(fd, static_cast<UpdaterInfo*>(state->cookie)->package_zip_addr,static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
+            if (len_w != static_cast<UpdaterInfo*>(state->cookie)->package_zip_len) {
+                printf("write %s failed!\n", UPDATE_TMP_FILE);
+                return ErrorAbort(state, kFwriteFailure, "write %s failed!\n", UPDATE_TMP_FILE);
+            }
+
+            close(fd);
+            ret = do_cache_sync();
+            if (ret < 0) {
+                printf("do sync for cache partition failed!\n");
+            }
+
+            //write the misc for upgrade from cache next update
+            memset(boot.recovery, 0, 768);
+            strncpy(boot.recovery, "recovery\n--update_package=/cache/update_tmp.zip\n", sizeof("recovery\n--update_package=/cache/update_tmp.zip"));
+            write_bootloader_message(boot,  &err);
         }
     }
 
     if (ret == 0) {
         return StringValue(strdup("0"));
     } else {
-        return ErrorAbort(state, "backup update to /dev/block/mmcblk* failed!\n");
+        return ErrorAbort(state, kArgsParsingFailure, "backup update to /dev/block/mmcblk* failed!\n");
     }
 }
 
 Value* DeleteFileByName(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
-    int ret = 0;
     if (argv.size() != 1) {
         return ErrorAbort(state, kArgsParsingFailure, "%s() expects 1 args, got %zu", name, argv.size());
     }
@@ -1026,7 +1618,7 @@ int get_info_unifykey(const char *path, struct key_item_info_t *info)
 
 
 
-int hdcp_write_key(const char * node, char *buff, char *name)
+int hdcp_write_key(const char * node, char *buff, const char *name)
 {
     int fd;
     int ret = 0;
@@ -1063,7 +1655,7 @@ int hdcp_write_key(const char * node, char *buff, char *name)
         close(fd);
         return -1;
     }
-    printf("write %s(%ld) down!\n", key_item_info.name, writesize);
+    printf("write %s(%zu) down!\n", key_item_info.name, writesize);
     close(fd);
     return ret;
 }
@@ -1112,20 +1704,20 @@ Value* WriteHdcp22RxFwFn(const char* name, State* state, const std::vector<std::
     //open /param/firmware.le
     int fd = open(PARAM_FIRMWARE, O_RDONLY);
     if (fd < 0) {
-        return ErrorAbort(state, "open file %s failed!\n", PARAM_FIRMWARE);
+        return ErrorAbort(state, kFileOpenFailure, "open file %s failed!\n", PARAM_FIRMWARE);
     }
 
     //seek 10k
     ret = lseek(fd, KEY_HDCP_OFFSET, SEEK_SET);
     if (ret < 0) {
-        return ErrorAbort(state, "lseek file %s(%d) failed!\n", PARAM_FIRMWARE, KEY_HDCP_OFFSET);
+        return ErrorAbort(state, kLseekFailure, "lseek file %s(%d) failed!\n", PARAM_FIRMWARE, KEY_HDCP_OFFSET);
     }
 
     //malloc buffer
     char *tmpbuf = (char *)malloc(KEY_HDCP_SIZE);
     if (tmpbuf == NULL) {
         close(fd);
-        return ErrorAbort(state, "malloc tmpbuf (%d) failed!\n", KEY_HDCP_SIZE);
+        return ErrorAbort(state, kArgsParsingFailure, "malloc tmpbuf (%d) failed!\n", KEY_HDCP_SIZE);
     }
 
     //memeset and read
@@ -1134,7 +1726,7 @@ Value* WriteHdcp22RxFwFn(const char* name, State* state, const std::vector<std::
     if (len != KEY_HDCP_SIZE) {
         close(fd);
         free(tmpbuf);
-        return ErrorAbort(state, "read %s (%d) failed!\n", PARAM_FIRMWARE,KEY_HDCP_SIZE);
+        return ErrorAbort(state, kFreadFailure, "read %s (%d) failed!\n", PARAM_FIRMWARE,KEY_HDCP_SIZE);
     }
     close(fd);
 
@@ -1142,7 +1734,7 @@ Value* WriteHdcp22RxFwFn(const char* name, State* state, const std::vector<std::
     ret = hdcp_write_key(PATH_KEY_CDEV, tmpbuf, UNIFYKEY_HDCP_FW);
     if (ret < 0) {
         free(tmpbuf);
-        return ErrorAbort(state, "write %s  failed!\n", UNIFYKEY_HDCP_FW);
+        return ErrorAbort(state, kFwriteFailure, "write %s  failed!\n", UNIFYKEY_HDCP_FW);
     }
     free(tmpbuf);
     tmpbuf = NULL;
@@ -1163,5 +1755,9 @@ void Register_libinstall_amlogic() {
     RegisterFunction("write_hdcp_22rxfw", WriteHdcp22RxFwFn);
     RegisterFunction("backup_env_partition", BackupEnvPartition);
     RegisterFunction("backup_update_package", BackupUpdatePackage);
+    RegisterFunction("backup_data_partition_check", BackupDataPartitionCheck);
+    RegisterFunction("backup_data_partition", BackupDataPartition);
+    RegisterFunction("recovery_data_partition", RecoveryDataPartition);
+
     RegisterFunction("delete_file", DeleteFileByName);
 }

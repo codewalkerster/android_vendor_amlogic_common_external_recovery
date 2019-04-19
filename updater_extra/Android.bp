@@ -5,6 +5,14 @@ cc_library_static {
     //    enabled: true,
     //},
     srcs: ["install_amlogic.cpp"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+    ] + [
+        "-Wwrite-strings",
+        "-Wno-sign-compare",
+        "-D_FILE_OFFSET_BITS=64",
+    ],
     static_libs: [
         "libfstab",
         "libselinux",

@@ -16,7 +16,6 @@ extern unsigned int recovery_size1;
 
 #define DTB_ERROR                  (-1)
 #define DTB_ALLOW                  (0)
-#define DTB_CONFIG_ALLOW   (2)
 #define DTB_TWO_STEP            (3)
 
 typedef struct Dtb_Partition_s

@@ -746,6 +746,15 @@ END:
     return ret;
 }
 
+int DtbCheckResult(int  reason) {
+#ifndef SUPPORT_PARTNUM_CHANGE
+    if (reason == DTB_TWO_STEP) {
+        return DTB_ERROR;
+    }
+#endif
+    return reason;
+}
+
 int
 RecoveryDtbCheck(const ZipArchiveHandle za){
     int i = 0, ret = -1, err = -1;
@@ -766,8 +775,8 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
     //if not android 9, need upgrade for two step
     std::string android_version = android::base::GetProperty("ro.build.version.sdk", "");
     if (strcmp("28", android_version.c_str())) {
-        printf("now upgrade from android %s to 9\n", android_version.c_str());
-        return DTB_TWO_STEP;
+        printf("now upgrade from android %s to 28\n", android_version.c_str());
+        return DtbCheckResult(DTB_TWO_STEP);
     }
 
     isEncrypted = IsPlatformEncrypted();
@@ -828,14 +837,8 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
             ret = DTB_ERROR;
             goto END;
         }
-        #ifdef SUPPORT_PARTNUM_CHANGE
-        ret = DTB_CONFIG_ALLOW;
+        ret = DTB_TWO_STEP;
         partition_num = partition_num_zip > partition_num_dev ? partition_num_zip : partition_num_dev;
-        #else
-        printf("partition num don't match zip:%d, dev:%d, can not upgrade!\n",partition_num_zip,  partition_num_dev);
-        ret = DTB_ERROR;
-        goto END;
-        #endif
     }
     printf("partition_num = %d \n",partition_num);
 
@@ -869,7 +872,7 @@ RecoveryDtbCheck(const ZipArchiveHandle za){
 
         if ((strcmp(dtb_zip[i].partition_name, dtb_dev[i].partition_name) != 0)||
                 (dtb_zip[i].partition_size != dtb_dev[i].partition_size)) {
-            ret = DTB_CONFIG_ALLOW;
+            ret = DTB_TWO_STEP;
             /*just emmc support partition changes*/
             if (device_type == DEVICE_NAND) {
                 printf("the partitions changed & device is nand! can not upgrade!\n ");
@@ -933,5 +936,5 @@ END:
         s_pDtbBuffer = NULL;
     }
 
-    return ret;
+    return DtbCheckResult(ret);
 }
