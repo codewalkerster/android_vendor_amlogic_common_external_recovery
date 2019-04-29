@@ -360,7 +360,33 @@ void* HdcpThreadLoop(void *) {
     return NULL;
 }
 
+
+// write /proc/sys/vm/watermark_scale_factor 30
+//write /proc/sys/vm/min_free_kbytes 12288
+int write_sys(const char *path, const char *value, int len) {
+    int fd = open(path, O_RDWR);
+    if (fd < 0) {
+        printf("open %s failed!\n", path);
+        return -1;
+    }
+
+    int size = write(fd, value, len);
+    if (size != len) {
+        printf("write %s failed!\n", path);
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    return 0;
+}
+void set_watermark_scale() {
+    write_sys("/proc/sys/vm/watermark_scale_factor", "30", strlen("30"));
+    write_sys("/proc/sys/vm/min_free_kbytes", "12288", strlen("12288"));
+}
+
 void amlogic_init() {
+    set_watermark_scale();
     pthread_t input_thread_;
     pthread_create(&input_thread_, nullptr, HdcpThreadLoop, nullptr);
     sleep(1);
