@@ -83,11 +83,13 @@ void fb_set() {
   int fd = open("/dev/graphics/fb0", O_RDWR);
   if (fd == -1) {
       printf("cannot open fb0");
+      return;
   }
 
   if (ioctl(fd, FBIOGET_VSCREENINFO, &vi2) < 0) {
       printf("failed to get fb0 info");
       close(fd);
+      return;
   }
 
   vi2.nonstd=1;
@@ -95,6 +97,8 @@ void fb_set() {
   vi2.activate = FB_ACTIVATE_FORCE;
   if (ioctl(fd, FBIOPUT_VSCREENINFO, &vi2) < 0) {
       printf("active fb swap failed");
+      close(fd);
+      return;
   }
 
   close(fd);
@@ -160,7 +164,7 @@ void load_key_map() {
                 }
                 keys_map[num_keys].type = strdup(type);
                 keys_map[num_keys].value = value;
-                keys_map[num_keys].key[0] = key1?atoi(key1):-1;
+                keys_map[num_keys].key[0] = atoi(key1);
                 keys_map[num_keys].key[1] = key2?atoi(key2):-1;
                 keys_map[num_keys].key[2] = key3?atoi(key3):-1;
                 keys_map[num_keys].key[3] = key4?atoi(key4):-1;

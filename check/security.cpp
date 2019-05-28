@@ -32,7 +32,7 @@ T_KernelVersion kernel_ver = KernelV_3_10;
 int SetDtbEncryptFlag(const char *flag) {
     int len = 0;
     int fd = open(DECRYPT_DTB, O_RDWR);
-    if (fd <= 0) {
+    if (fd < 0) {
         printf("open %s failed!\n", DECRYPT_DTB);
         return -1;
     }
@@ -158,7 +158,7 @@ static int IsPlatformMachWithZipArchiveImage(
                 ret = 0;
             } else {
                 fd = open(DEFEND_KEY, O_RDWR);
-                if (fd <= 0) {
+                if (fd < 0) {
                     printf("open %s failed (%s)\n",
                         DEFEND_KEY, strerror(errno));
                     return -1;
@@ -261,7 +261,7 @@ static int IsBootloaderImageEncrypted(
         step1 = 0;
     }
 
-    if ((step0 == 1) && (step0 == 1)) {
+    if ((step0 == 1) && (step1 == 1)) {
         return 1;  // encrypted
     }
 
@@ -306,7 +306,7 @@ int DtbImgEncrypted(
     }
 
     fd = open(DEFEND_KEY, O_RDWR);
-    if (fd <= 0) {
+    if (fd < 0) {
         printf("open %s failed (%s)\n",DEFEND_KEY, strerror(errno));
         return -1;
     }
@@ -498,9 +498,9 @@ int IsPlatformEncrypted(void)
     }
 
     fd = open(SECURE_CHECK, O_RDONLY);
-    if (fd <= 0) {
+    if (fd < 0) {
         fd = open(SECURE_CHECK_BAK, O_RDONLY);
-        if (fd <= 0) {
+        if (fd < 0) {
             printf("open %s failed (%s)\n",
             SECURE_CHECK, strerror(errno));
             return -1;
@@ -530,7 +530,7 @@ int IsPlatformEncrypted(void)
         printf("check platform(%s): %s\n", platform, rBuf);
     }
 
-    if (fd > 0) {
+    if (fd >= 0) {
         close(fd);
         fd = -1;
     }

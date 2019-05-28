@@ -105,7 +105,7 @@ int GetDeviceType()
     }
     fclose(p);
 
-    printf("buffer:%s\n",buffer);
+    //printf("buffer:%s\n",buffer);
 
     type = atoi(buffer);
     printf("type=%d\n",type);
@@ -137,6 +137,7 @@ GetDtbId(char *pdt){
     }
     fclose(p);
 
+    buffer[1023] = '\0';
     char *paddr=strstr(buffer, ENV_DTB);
     if (paddr == NULL) {
         printf("not find env:aml_dt !\n");
@@ -217,12 +218,13 @@ static void print_data(const void *data, int len, int *index, int flag)
 	if (is_printable_string(pd, len)) {
 		j = 0;
 		while (j < len) {
+			int len = strlen(pd) > 15 ? 15: strlen(pd);
 			if (flag == 0) {
-                        strcpy(dtb_zip[*index].partition_name,  pd);
+				strncpy(dtb_zip[*index].partition_name,  pd, len);
 			} else {
-                        strcpy(dtb_dev[*index].partition_name,  pd);
-                    }
-                     j    += strlen(pd) + 1;
+				strncpy(dtb_dev[*index].partition_name,  pd, len);
+			}
+			j += strlen(pd) + 1;
 			pd += strlen(pd) + 1;
 		}
 		return;
@@ -287,13 +289,7 @@ GetPartitionFromDtb(const char *pathp,  int depth, int *partition_num, int flag)
 		tag = fdt_next_tag(working_fdt, nodeoffset, &nextoffset);
 		switch (tag) {
 		case FDT_BEGIN_NODE:
-			pathp = fdt_get_name(working_fdt, nodeoffset, NULL);
-			if (level <= depth) {
-				if (pathp == NULL)
-					pathp = "/* NULL pointer error */";
-				if (*pathp == '\0')
-					pathp = "/";	/* root is nameless */
-			}
+			fdt_get_name(working_fdt, nodeoffset, NULL);
 			level++;
 			if (level >= MAX_LEVEL) {
 				printf("Nested too deep, aborting.\n");
@@ -311,7 +307,7 @@ GetPartitionFromDtb(const char *pathp,  int depth, int *partition_num, int flag)
 		case FDT_PROP:
 			fdt_prop = (struct fdt_property *)fdt_offset_ptr(working_fdt, nodeoffset,
 					sizeof(*fdt_prop));
-			pathp    = fdt_string(working_fdt,
+			fdt_string(working_fdt,
 					fdt32_to_cpu(fdt_prop->nameoff));
 			len      = fdt32_to_cpu(fdt_prop->len);
 			nodep    = fdt_prop->data;
@@ -403,7 +399,7 @@ GetMultiDtbEntry(unsigned char *fdt_addr, int *plen){
         int i = 0;
         char *aml_dt_buf;
         aml_dt_buf = (char *)malloc(sizeof(char)*64);
-        memset(aml_dt_buf, 0, sizeof(aml_dt_buf));
+        memset(aml_dt_buf, 0, 64);
 
         GetDtbId(aml_dt_buf);
         //printf("aml_dt_buf:%s\n", aml_dt_buf);
@@ -411,6 +407,7 @@ GetMultiDtbEntry(unsigned char *fdt_addr, int *plen){
         unsigned int aml_dt_len = aml_dt_buf ? strlen(aml_dt_buf) : 0;
         if (aml_dt_len <= 0) {
             printf("Get env aml_dt failed!Ignore dtb check !\n");
+            free(aml_dt_buf);
             *plen = 0;
             return fdt_addr;
         }

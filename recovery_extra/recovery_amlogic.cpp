@@ -162,7 +162,10 @@ int customize_smart_device_mounted(
         }
 
         if (access(vol->mount_point, F_OK)) {
-            mkdir(vol->mount_point, 0755);
+            if (mkdir(vol->mount_point, 0755) == -1) {
+                printf("mkdir %s failed!\n", vol->mount_point);
+                return -1;
+            }
         }
 
         // find '#' position
@@ -247,7 +250,10 @@ int smart_device_mounted(Volume *vol) {
     char device_name[256] = {0};
     char *mounted_device = NULL;
 
-    mkdir(vol->mount_point, 0755);
+    if (mkdir(vol->mount_point, 0755) == -1) {
+        printf("mkdir %s failed!\n", vol->mount_point);
+        return -1;
+    }
 
     if (vol->blk_device != NULL) {
         int ret = customize_smart_device_mounted(vol);
@@ -291,7 +297,13 @@ int smart_device_mounted(Volume *vol) {
             }
         } else {
             LOGW("try mount %s ...\n", vol->blk_device);
-            strncpy(device_name, vol->blk_device, sizeof(device_name));
+
+            //check device name size < buffer size
+            if (strlen(vol->blk_device) > 255) {
+                printf("the device : %s is too long!\n", vol->blk_device);
+                return -1;
+            }
+            strncpy(device_name, vol->blk_device, strlen(vol->blk_device));
             if (!access(device_name, F_OK)) {
                 if (!auto_mount_fs(device_name, vol)) {
                     mounted_device = device_name;

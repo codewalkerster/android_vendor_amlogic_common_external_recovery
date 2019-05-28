@@ -161,7 +161,7 @@ static int getBootloaderOffset(int* bootloaderOffset)
     char  buf[16]         = { 0 };
     int           readCnt = 0;
 
-    iret = read_sysfs_val(PathBlOff, buf, 16, &readCnt);
+    iret = read_sysfs_val(PathBlOff, buf, 15, &readCnt);
     if (iret < 0) {
             printf("fail when read path[%s]\n", PathBlOff);
             return __LINE__;
@@ -182,9 +182,12 @@ static int write_data(int fd, const char *data, ssize_t len)
     char *verify = NULL;
 
     off_t pos = lseek(fd, 0, SEEK_CUR);
+    if (pos == -1) {
+        fprintf(stderr, "lseek failed to get cur offset (%s)\n",  strerror(errno));
+        return -1;
+    }
+
     fprintf(stderr, "data len = %d, pos = %ld\n", len, pos);
-
-
     if (write(fd, data, len) != len) {
         fprintf(stderr, " write error at 0x%08lx (%s)\n",pos, strerror(errno));
         return -1;
@@ -296,6 +299,7 @@ static int backup_partition_data(const char *name,const char *dir, long offset) 
     dst_fd = open(dstpath, O_WRONLY | O_CREAT, 00777);
     if (dst_fd < 0) {
         fprintf(stderr, "open %s failed (%s)\n",dstpath, strerror(errno));
+        close(sor_fd);
         return -1;
     }
 
@@ -306,7 +310,11 @@ static int backup_partition_data(const char *name,const char *dir, long offset) 
     }
 
     if (strcmp(name, "dtb")) {
-        lseek(sor_fd, offset, SEEK_SET);
+        ret = lseek(sor_fd, offset, SEEK_SET);
+        if (ret == -1) {
+            printf("failed to lseek %d\n", offset);
+            goto err_out;
+        }
     }
 
     readed = read(sor_fd, buffer, BUFFER_MAX);
@@ -335,11 +343,11 @@ static int backup_partition_data(const char *name,const char *dir, long offset) 
 
 
 err_out:
-    if (sor_fd > 0) {
+    if (sor_fd >= 0) {
         close(sor_fd);
     }
 
-    if (dst_fd > 0) {
+    if (dst_fd >= 0) {
         close(dst_fd);
     }
 
@@ -411,15 +419,11 @@ static ssize_t write_chrdev_data(const char *dev, const char *data, const ssize_
         free(verify);
     }
 
-    if (fd > 0) {
-        close(fd);
-    }
+    close(fd);
     return wrote;
 
 err:
-    if (fd > 0) {
-        close(fd);
-    }
+    close(fd);
     return -1;
 }
 
@@ -445,12 +449,16 @@ int block_write_data( const std::string& args, off_t offset) {
             fd = open(devname, O_RDWR);
             if (fd < 0) {
                 printf("failed to open %s\n", devname);
-                goto done;
+                return -1;
             }
         }
 
         printf("start to write bootloader to %s...\n", devname);
-        lseek(fd, offset, SEEK_SET);//seek to skip mmc area since gxl
+        result =lseek(fd, offset, SEEK_SET);//seek to skip mmc area since gxl
+        if (result == -1) {
+            printf("failed to lseek %d\n", offset);
+            goto done;
+        }
         ssize_t wrote = write_data(fd, args.c_str(), args.size());
         success = (wrote == args.size());
 
@@ -464,7 +472,12 @@ int block_write_data( const std::string& args, off_t offset) {
         printf("start to write bootloader to %s...\n", devname);
         success = true;
         int size =  args.size();
-        lseek(fd, offset, SEEK_SET);//need seek one sector to skip MBR area since gxl
+        result = lseek(fd, offset, SEEK_SET);//need seek one sector to skip MBR area since gxl
+        if (result == -1) {
+            printf("failed to lseek %d\n", offset);
+            goto done;
+        }
+
         fprintf(stderr, "size = %d offset = %ld\n", size, offset);
         if (write(fd, args.c_str(), size) != size) {
             fprintf(stderr, " write error at offset :%ld (%s)\n",offset, strerror(errno));
@@ -477,12 +490,13 @@ int block_write_data( const std::string& args, off_t offset) {
             printf("write_data to %s partition successful\n", devname);
         }
     }
+    close(fd);
 
     result = success ? 0 : -1;
     return result;
 
 done:
-    if (fd > 0) {
+    if (fd >= 0) {
         close(fd);
         fd = -1;
     }
@@ -650,7 +664,7 @@ Value* OtaZipCheck(const char* name, State* state,
             printf("dtb check not match, but can upgrade by two step.\n\n");
             return StringValue(strdup("1"));
         }
-        return ErrorAbort(state, kArgsParsingFailure, "Dtb check failed. %s\n\n", !check ? "(Not match)" : "");
+        return ErrorAbort(state, kArgsParsingFailure, "Dtb check failed. Not match\n");
     } else {
         printf("dtb check complete.\n\n");
     }
@@ -921,6 +935,7 @@ int Recovery_Resize2fs_Data(void) {
     int ret = 0;
     char buf[256] = {0};
     int matches = 0;
+    unsigned resize_4k = 0;
     unsigned long long data_resize = 0;
     unsigned long long data_old_offset = 0;
 
@@ -932,7 +947,7 @@ int Recovery_Resize2fs_Data(void) {
     }
 
     //fread data from datainfo
-    int len = fread(buf, 1, 256, pf);
+    int len = fread(buf, 1, 255, pf);
 
     //close datainfo
     fclose(pf);
@@ -942,14 +957,14 @@ int Recovery_Resize2fs_Data(void) {
     }
 
     //parse datainfo
-    matches = sscanf(buf, "%llu %llu", &data_resize, &data_old_offset);
+    matches = sscanf(buf, "%u %llu", &resize_4k, &data_old_offset);
     if (matches != 2) {
         printf("fread %s error data!\n", RESIZE2FS_INFO);
         return -1;
     }
 
     //blocks to real size
-    data_resize = data_resize*4*1024;
+    data_resize = (unsigned long long)resize_4k*4*1024;
     printf("backup resize2fs %s (%llu) \n",DATA_DEVICE, data_resize);
 
     //open /dev/block/data for get fd
@@ -1444,8 +1459,19 @@ Value* BackupUpdatePackage(const char* name, State* state,
 
     if (strstr(boot.recovery, "--update_package=")) {
         printf("check bootloader_message \n");
+
+        //check for strcpy not out of memory
+        if (strlen(strstr(boot.recovery, "--update_package=")) > 255) {
+            return ErrorAbort(state, kArgsParsingFailure, "boot.recovery is too long!\n");
+        }
+
         strcpy(tmp, strstr(boot.recovery, "--update_package="));
         char *p = strtok(tmp, "\n");
+
+        //check for strcpy not out of memory
+        if (strlen(tmp+strlen("--update_package=")) > 255) {
+            return ErrorAbort(state, kArgsParsingFailure, "boot.recovery is too long!\n");
+        }
         strcpy(path, tmp+strlen("--update_package="));
     }
 
@@ -1479,6 +1505,11 @@ Value* BackupUpdatePackage(const char* name, State* state,
             std::string content;
             if (android::base::ReadFileToString(UNCRYPT_FILE, &content)) {
                 printf("recovery uncrypt: %s\n", content.c_str());
+
+                //check for strcpy not out of memory
+                if (strlen(content.c_str()) > 255) {
+                    return ErrorAbort(state, kArgsParsingFailure, "recovery uncrypt data size > 255!\n");
+                }
                 strcpy(path, content.c_str());
             }
 
@@ -1506,12 +1537,14 @@ Value* BackupUpdatePackage(const char* name, State* state,
             int result = lseek(fd, offset_w*1024*1024, SEEK_SET);
             if (result == -1) {
                 printf("lseek %s failed!\n", partition.c_str());
+                close(fd);
                 return ErrorAbort(state, kLseekFailure, "lseek mmcblk failed!\n");
             }
 
             size_t len_w = write(fd, static_cast<UpdaterInfo*>(state->cookie)->package_zip_addr,static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
             if (len_w != static_cast<UpdaterInfo*>(state->cookie)->package_zip_len) {
                 printf("write %s failed!\n", partition.c_str());
+                close(fd);
                 return ErrorAbort(state, kFwriteFailure, "write mmcblk failed!\n");
             }
 
@@ -1537,6 +1570,7 @@ Value* BackupUpdatePackage(const char* name, State* state,
             size_t len_w = write(fd, static_cast<UpdaterInfo*>(state->cookie)->package_zip_addr,static_cast<UpdaterInfo*>(state->cookie)->package_zip_len);
             if (len_w != static_cast<UpdaterInfo*>(state->cookie)->package_zip_len) {
                 printf("write %s failed!\n", UPDATE_TMP_FILE);
+                close(fd);
                 return ErrorAbort(state, kFwriteFailure, "write %s failed!\n", UPDATE_TMP_FILE);
             }
 
@@ -1588,6 +1622,11 @@ int init_unifykey(const char *path, const char *keyname)
     int ret = -1;
     struct key_item_info_t key_item_info;
 
+    if (strlen(keyname) > KEY_UNIFY_NAME_LEN) {
+        printf("keyname:%s size is too long\n", keyname);
+        return -1;
+    }
+
     fp  = open(path, O_RDWR);
     if (fp < 0) {
         printf("no %s found\n", path);
@@ -1632,6 +1671,11 @@ int hdcp_write_key(const char * node, char *buff, const char *name)
         return -1;
     }
 
+    if (strlen(name) > KEY_UNIFY_NAME_LEN) {
+        printf("name:%s size is too long\n", name);
+        return -1;
+    }
+
     fd  = open(node, O_RDWR);
     if (fd < 0) {
         printf("no %s found\n", node);
@@ -1647,7 +1691,12 @@ int hdcp_write_key(const char * node, char *buff, const char *name)
     }
 
     ppos = key_item_info.id;
-    lseek(fd, ppos, SEEK_SET);
+    ret = lseek(fd, ppos, SEEK_SET);
+    if (ret == -1) {
+        printf("failed to lseek %d\n", ppos);
+        close(fd);
+        return -1;
+    }
 
     writesize = write(fd, buff, KEY_HDCP_SIZE);
     if (writesize != KEY_HDCP_SIZE) {
@@ -1657,7 +1706,7 @@ int hdcp_write_key(const char * node, char *buff, const char *name)
     }
     printf("write %s(%zu) down!\n", key_item_info.name, writesize);
     close(fd);
-    return ret;
+    return 0;
 }
 
 
@@ -1710,6 +1759,7 @@ Value* WriteHdcp22RxFwFn(const char* name, State* state, const std::vector<std::
     //seek 10k
     ret = lseek(fd, KEY_HDCP_OFFSET, SEEK_SET);
     if (ret < 0) {
+        close(fd);
         return ErrorAbort(state, kLseekFailure, "lseek file %s(%d) failed!\n", PARAM_FIRMWARE, KEY_HDCP_OFFSET);
     }
 
