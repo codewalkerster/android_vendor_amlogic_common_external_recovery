@@ -252,7 +252,7 @@ int smart_device_mounted(Volume *vol) {
 
     if (mkdir(vol->mount_point, 0755) == -1) {
         printf("mkdir %s failed!\n", vol->mount_point);
-        return -1;
+        //return -1;
     }
 
     if (vol->blk_device != NULL) {
@@ -415,6 +415,10 @@ void amlogic_get_args(std::vector<std::string>& args) {
             for (auto it = tokens.begin(); it != tokens.end(); it++) {
                 // Skip empty and '\0'-filled tokens.
                 if (!it->empty() && (*it)[0] != '\0') {
+                    int size = it->size();
+                    if ((*it)[size-1] == '\r') {
+                        (*it)[size-1] = '\0';
+                    }
                     args.push_back(std::move(*it));
                 }
             }
@@ -431,6 +435,10 @@ void amlogic_get_args(std::vector<std::string>& args) {
             for (auto it = tokens.begin(); it != tokens.end(); it++) {
                 // Skip empty and '\0'-filled tokens.
                 if (!it->empty() && (*it)[0] != '\0') {
+                    int size = it->size();
+                    if ((*it)[size-1] == '\r') {
+                        (*it)[size-1] = '\0';
+                    }
                     args.push_back(std::move(*it));
                 }
             }
