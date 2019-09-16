@@ -22,9 +22,6 @@ int set_display_mode(const char *path)
     Ubootenv *pUbootenv = new Ubootenv();
 
     DisplayMode displayMode(path, pUbootenv);
-    //setBootEnv
-    //displayMode.setBootEnv("upgrade_step", "1");
-    pUbootenv->updateValue("ubootenv.var.upgrade_step", "1");
     displayMode.setRecoveryMode(true);
     displayMode.init();
 
