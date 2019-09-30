@@ -66,7 +66,9 @@ Description:
 #define COMMAND_FILE "/cache/recovery/command"
 #define CACHE_ROOT "/cache"
 
+#define RECOVERY_IMG "recovery.img"
 #define UNCRYPT_FILE "/cache/recovery/uncrypt_file"
+#define RECOVERY_BACKUP "/cache/recovery/recovery.img"
 #define UPDATE_TMP_FILE "/cache/update_tmp.zip"
 #define DEV_DATA                "/dev/block/data"
 #define DEV_EMMC                "/dev/block/mmcblk0"
@@ -1792,6 +1794,39 @@ Value* WriteHdcp22RxFwFn(const char* name, State* state, const std::vector<std::
     return StringValue("OK");
 }
 
+Value* RecoveryBackupExist(const char* name, State* state, const std::vector<std::unique_ptr<Expr>>& argv) {
+
+    ZipArchiveHandle za = static_cast<UpdaterInfo*>(state->cookie)->package_zip;
+    ZipString zip_string_path(RECOVERY_IMG);
+    ZipEntry entry;
+
+    //get recovery.img entry
+    if (FindEntry(za, zip_string_path, &entry) != 0) {
+        printf("no %s in package, no need backup.\n", zip_string_path.name);
+        return StringValue(strdup("1"));
+    }
+
+    //recovery.img length
+    printf("entry.uncompressed_length:%d\n", entry.uncompressed_length);
+
+    //check /cache/recovery/recovery.img exist
+    struct stat st;
+    if (stat(RECOVERY_BACKUP, &st) == 0) {
+        if (st.st_size >= entry.uncompressed_length) {
+            //has recovery.img backup, no need backup again
+            printf("%s is ok,no need backup.\n", RECOVERY_BACKUP);
+            return StringValue(strdup("1"));
+        } else {
+            //recovery.img not full, need backup
+            printf("%s not full, need backup.\n", RECOVERY_BACKUP);
+            return StringValue(strdup("0"));
+        }
+    } else {
+        printf("%s not exist, need backup.\n", RECOVERY_BACKUP);
+        return StringValue(strdup("0"));
+    }
+}
+
 void Register_libinstall_amlogic() {
     RegisterFunction("write_dtb_image", WriteDtbImageFn);
     RegisterFunction("write_bootloader_image", WriteBootloaderImageFn);
@@ -1810,4 +1845,5 @@ void Register_libinstall_amlogic() {
     RegisterFunction("recovery_data_partition", RecoveryDataPartition);
 
     RegisterFunction("delete_file", DeleteFileByName);
+    RegisterFunction("recovery_backup_exist", RecoveryBackupExist);
 }
